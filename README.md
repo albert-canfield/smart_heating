@@ -1,25 +1,86 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/albert-canfield/smart_heating/main/docs/images/hero.jpg" alt="Smart Heating: turn your heating into a smart, multizone system" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=albert-canfield&repository=smart_heating&category=integration"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open in HACS"></a>
+</p>
+
+<p align="center">
+  <a href="https://hacs.xyz"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5.svg" alt="HACS Custom"></a>
+  <a href="https://github.com/albert-canfield/smart_heating/releases"><img src="https://img.shields.io/github/v/release/albert-canfield/smart_heating" alt="Release"></a>
+  <a href="https://github.com/albert-canfield/smart_heating/actions/workflows/validate.yml"><img src="https://github.com/albert-canfield/smart_heating/actions/workflows/validate.yml/badge.svg" alt="Validate"></a>
+  <img src="https://img.shields.io/badge/Home%20Assistant-2026.2%2B-18BCF2" alt="Home Assistant 2026.2+">
+</p>
+
 # Smart Heating
 
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz)
-[![Validate](https://github.com/albert-canfield/smart_heating/actions/workflows/validate.yml/badge.svg)](https://github.com/albert-canfield/smart_heating/actions/workflows/validate.yml)
-[![Release](https://img.shields.io/github/v/release/albert-canfield/smart_heating)](https://github.com/albert-canfield/smart_heating/releases)
+**Turn your home's heating into a smart, multizone system that learns.**
 
-<img src="icon.svg" width="96" alt="Smart Heating icon">
+Tired of a heating system that heats empty rooms, fires the boiler for half a degree and has no idea it will be mild tomorrow? Smart Heating builds a profile of your home: how fast each room loses heat, how quickly it warms up, how much the sun, people and cooking add, and how heat rises between floors. It reads the weather forecast, follows how you actually use each room, and heats only where and when it makes sense.
 
-[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=albert-canfield&repository=smart_heating&category=integration)
+Comfort where you are, savings everywhere else. And it is fully transparent: you see the gas and electricity used, what it cost, an insulation grade for every room, and the reason behind every decision.
 
-A Home Assistant integration that heats a house room by room with two voices:
+It works with what you already have: a gas boiler with a tank, a combi, electric heaters or a mix of both, on one floor or several.
 
-- **Need**: does a room need heat? Safety floor, day/night baseline, comfort when a room is in use.
-- **Efficiency**: is it worth burning gas now? Season gate, coasting, heat rising from lower floors, batching small demand, hot water priority, boiler min run/off.
+## Why Smart Heating
 
-The boiler fires only when a need is approved. TRVs act as valves (open / closed) and only move when the boiler is about to run or is running.
+| | |
+|---|---|
+| 🏠 **Multizone from what you own** | Smart TRVs, a boiler relay or thermostat, smart plugs or smart heaters become one coordinated system, room by room. |
+| 🧠 **Learns your home** | Measures each room's heat loss, warm-up speed and free heat from normal life, then predicts temperatures hours ahead. |
+| 🌦️ **Plans with the forecast** | Skips heating on mild days and knows how cold tonight will be. |
+| 🚶 **Follows your habits** | Presence sensors, lights, media and schedules decide which rooms deserve comfort. Empty rooms are kept at a sensible baseline. |
+| 🔥 **Burns less** | Waits when a room is already warming, lets heat rise from the floor below, batches small demands and gives hot water priority. |
+| 🪜 **One floor or many** | Uses the stack effect in multi-floor homes so upper rooms often heat themselves. |
+| ⚡ **Gas, combi, electric or hybrid** | Rooms with only electric heat never fire the boiler. One room with a heater? It uses the heater instead of firing the whole boiler. |
+| 📊 **Fully transparent** | kWh and cost today (gas and electric), an A to G insulation grade per room, floor and house, and a log of every decision. |
+| 🛡️ **Safe by design** | Frost protection is always on, and the boiler is protected from short cycling. It never fights your other controls. |
+| 🧩 **Set up in minutes** | A short wizard asks what heats your home. Your Home Assistant areas become rooms with their sensors filled in. |
+
+## See it in action
+
+<p align="center"><img src="https://raw.githubusercontent.com/albert-canfield/smart_heating/main/docs/images/trio.jpg" alt="The card while learning, while heating with hot water at night, and when off" width="100%"></p>
+
+One card for the whole house: temperature, status at a glance, floor averages, mode buttons and a house target. The background shifts from blue to orange with the house temperature.
+
+<table>
+  <tr>
+    <td width="50%"><img src="https://raw.githubusercontent.com/albert-canfield/smart_heating/main/docs/images/rooms.jpg" alt="Expanded card with room details, heater power, energy and insulation"></td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/albert-canfield/smart_heating/main/docs/images/cal.jpg" alt="Calibration panel with progress bars and a one-tap heat test"></td>
+  </tr>
+  <tr>
+    <td><b>Every room, explained.</b> Why it is heating or waiting, its own target, predictions for the next hours, energy used and its insulation grade.</td>
+    <td><b>Calibration you can follow.</b> See what it is learning and how long is left, and speed it up with a one-tap heat test.</td>
+  </tr>
+</table>
+
+<p align="center"><img src="https://raw.githubusercontent.com/albert-canfield/smart_heating/main/docs/images/wizard.jpg" alt="Setup starts with one question: what heats your home?" width="70%"></p>
+<p align="center"><i>Setup starts with one question. The next steps only ask what your home needs. (Illustration of the setup flow.)</i></p>
+
+## How it decides
+
+<p align="center"><img src="https://raw.githubusercontent.com/albert-canfield/smart_heating/main/docs/images/how.jpg" alt="Senses, need, efficiency, acts" width="100%"></p>
+
+Two voices must agree before the boiler fires. **Need** asks whether a room is below its frost floor, its baseline or, while in use, its comfort target. **Efficiency** asks whether burning now is worth it: is it mild outside, is the room already warming, is heat rising from below, is the demand too small, is hot water heating first? Valves and heaters move only when there is a reason.
+
+## Quick start
+
+1. Install from HACS with the button above, then restart Home Assistant.
+2. Settings, Devices & services, Add integration, **Smart Heating**. Answer the short wizard and tick the rooms to heat.
+3. Add the card to a dashboard: `type: custom:smart-heating-card`.
+
+Smart Heating then learns your home for 1 to 3 days while it only watches. You get a notification when it is ready; tap **Start control** on the card.
+
+---
+
+# Documentation
 
 Version 0.9.6. Lifecycle:
 
-1. **Calibrating** (monitor only, locked): learns each room's heat-loss time constant, free-heat gain and warm-up rate from normal life. Decides and logs, never touches the boiler or TRVs.
-2. **Ready**: a notification says calibration is done (Home Assistant notification, plus your phone if a notify service is set). Monitor only can now be turned off.
-3. **Controlling**: drives the boiler and TRVs.
+1. **Calibrating** (watching only): learns each room's heat-loss time constant, free-heat gain and warm-up rate from normal life. Decides and logs, never touches the boiler or TRVs.
+2. **Ready**: a notification says calibration is done (Home Assistant, plus your phone if a notify service is set).
+3. **Controlling**: drives the boiler, TRVs and heaters.
 
 ### Calibration in short
 
@@ -71,8 +132,6 @@ Other fallbacks:
 - **No away source**: away mode is never triggered; use the mode buttons.
 - **No night schedule**: 22:00 to 07:00, changeable in Configure.
 - **No areas or floors in HA**: rooms can still be added; floor is then picked in the room form.
-
-<img src="docs/card.png" width="720" alt="Smart Heating card: calibrating, heat test running, ready to take over, and an expanded room in dark mode">
 
 ## Install
 
