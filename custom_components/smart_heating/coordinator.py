@@ -698,7 +698,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             for h in room.heaters:
                 await self._set_heater(h, True, 25.0, room)
         await self._boiler(True, 25.0)
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     @property
     def heat_test_left_min(self) -> int | None:

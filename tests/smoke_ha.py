@@ -31,6 +31,10 @@ class _Stub(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 sys.meta_path.insert(0, _Stub())
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
+from ha_env import load_registries, pin_clock  # noqa: E402
+
+pin_clock()
+
 from homeassistant.core import HomeAssistant, ServiceResponse, SupportsResponse  # noqa: E402
 from homeassistant.config_entries import ConfigEntry, ConfigSubentryData  # noqa: E402
 from homeassistant.util import dt as dt_util  # noqa: E402
@@ -45,9 +49,7 @@ _coord.TRV_STAGGER_S = 0
 async def main() -> None:
     hass = HomeAssistant(tempfile.mkdtemp())
     await hass.config.async_set_time_zone("Europe/London")
-    from homeassistant.helpers import area_registry as _ar, device_registry as _dr, entity_registry as _er, floor_registry as _fr
-    for _m in (_fr, _ar, _dr, _er):
-        await _m.async_load(hass)
+    await load_registries(hass)
     await hass.async_start()
 
     calls = []

@@ -16,6 +16,10 @@ class _Stub(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 sys.meta_path.insert(0, _Stub())
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
+from ha_env import load_registries, pin_clock  # noqa: E402
+
+pin_clock()
+
 from homeassistant.core import HomeAssistant  # noqa: E402
 from homeassistant.config_entries import ConfigEntry, ConfigSubentryData  # noqa: E402
 from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, floor_registry as fr  # noqa: E402
@@ -28,8 +32,7 @@ from custom_components.smart_heating.coordinator import HeatingCoordinator  # no
 async def main():
     hass = HomeAssistant(tempfile.mkdtemp())
     await hass.config.async_set_time_zone("Europe/London")
-    for mod in (fr, ar, dr, er):
-        await mod.async_load(hass)
+    await load_registries(hass)
     await hass.async_start()
     floors, areas, devs, ents = fr.async_get(hass), ar.async_get(hass), dr.async_get(hass), er.async_get(hass)
     f2 = floors.async_create("2nd Floor")   # no levels set, like a typical setup
