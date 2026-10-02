@@ -38,10 +38,10 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddC
     gas = [
         Metric(c, "gas_today", lambda c: c.gas_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="gas_today",
                device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING,
-               attrs=lambda c: {"measured": c.gas_measured, "heating_runtime_min": round(c.energy.heat_runtime_min), "hot_water_runtime_min": round(c.energy.hw_runtime_min)}),
+               attrs=lambda c: {"measured": c.gas_measured, "source": c.gas_source, "heating_runtime_min": round(c.energy.heat_runtime_min), "hot_water_runtime_min": round(c.energy.hw_runtime_min)}),
         Metric(c, "gas_cost_today", lambda c: c.gas_cost, "GBP", kind="gas_cost_today",
-               device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL,
-               attrs=lambda c: {"price_per_kwh": c.gas_price, "standing_charge": c.standing, "measured": c.gas_measured}),
+               device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL, daily=True,
+               attrs=lambda c: {"price_per_kwh": round(c.gas_price_now, 4), "price_from": c.gas_price_from, "measured": c.gas_measured}),
         Metric(c, "boiler_runtime_today", lambda c: round(c.energy.runtime_min), UnitOfTime.MINUTES, kind="runtime_today"),
         Metric(c, "boiler_burns_today", lambda c: c.energy.burns, None, kind="burns_today"),
         Metric(c, "gas_per_degree_day", lambda c: c.kwh_per_dd, "kWh/°Cd", kind="kwh_per_degree_day",
@@ -56,7 +56,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddC
                    attrs=lambda c: {"measured": c.electric_measured, "projected_today_kwh": c.elec_projected_kwh,
                                     "power_now_w": round(sum(c.heater_power_w(r) for r in c.rooms.values() if r.heaters))}),
             Metric(c, "electric_cost_today", lambda c: c.elec_cost, "GBP", kind="electric_cost_today",
-                   device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL,
+                   device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL, daily=True,
                    attrs=lambda c: {"price_per_kwh": c.elec_price,
                                     "projected_today": round((c.elec_projected_kwh or 0) * c.elec_price, 2) if c.elec_projected_kwh else None}),
         ]
@@ -233,9 +233,9 @@ class ClimateSensor(HouseEntity, SensorEntity):
 class Metric(HouseEntity, SensorEntity):
     """Generic house metric read from the coordinator."""
 
-    def __init__(self, coordinator, key, getter, unit, kind, device_class=None, state_class=SensorStateClass.MEASUREMENT, attrs=None) -> None:
+    def __init__(self, coordinator, key, getter, unit, kind, device_class=None, state_class=SensorStateClass.MEASUREMENT, attrs=None, daily=False) -> None:
         super().__init__(coordinator, key)
-        self._getter, self._kind, self._attrs = getter, kind, attrs
+        self._getter, self._kind, self._attrs, self._daily = getter, kind, attrs, daily
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
         self._attr_state_class = state_class if unit is not None or kind == "burns_today" else None
@@ -243,6 +243,11 @@ class Metric(HouseEntity, SensorEntity):
     @property
     def native_value(self):
         return self._getter(self.coordinator)
+
+    @property
+    def last_reset(self):
+        """Daily totals restart at local midnight, so long-term statistics don't count the drop."""
+        return dt_util.start_of_local_day() if self._daily else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

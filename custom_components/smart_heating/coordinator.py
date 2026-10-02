@@ -33,6 +33,10 @@ from .const import (
     CONF_OUTDOOR_TEMP,
     CONF_WEATHER,
     CONF_GAS_METER,
+    CONF_GAS_RATE,
+    CONF_ENERGY_SOURCE,
+    SOURCE_METER,
+    SOURCE_ESTIMATE,
     CONF_AREA,
     CONF_ALARM,
     CONF_HW_PRIORITY,
@@ -60,7 +64,6 @@ from .const import (
     CALIBRATED_SHARE,
     DEFAULT_BOILER_KW,
     DEFAULT_GAS_PRICE,
-    DEFAULT_STANDING,
     FORECAST_REFRESH_MIN,
     OPT_BOILER_KW,
     OPT_GAS_PRICE,
@@ -70,7 +73,6 @@ from .const import (
     OPT_NIGHT_END,
     DEFAULT_NIGHT_START,
     DEFAULT_NIGHT_END,
-    OPT_STANDING,
     SAVE_DELAY_S,
     STORE_VERSION,
     CONF_PRESENCE,
@@ -265,8 +267,9 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self.night_start = _parse_time(opts.get(OPT_NIGHT_START, DEFAULT_NIGHT_START))
         self.night_end = _parse_time(opts.get(OPT_NIGHT_END, DEFAULT_NIGHT_END))
         self.notify_service: str = str(opts.get(OPT_NOTIFY, "") or "")
-        self.gas_price = float(opts.get(OPT_GAS_PRICE, DEFAULT_GAS_PRICE))
-        self.standing = float(opts.get(OPT_STANDING, DEFAULT_STANDING))
+        self.gas_price = float(opts.get(OPT_GAS_PRICE, DEFAULT_GAS_PRICE))  # fixed, or fallback for the rate sensor
+        self.gas_price_now = self.gas_price
+        self.gas_price_from = "fixed"
         self.boiler_kw = float(opts.get(OPT_BOILER_KW, DEFAULT_BOILER_KW))
         self.elec_price = float(opts.get(OPT_ELEC_PRICE, DEFAULT_ELEC_PRICE))
         self.elec_kwh = 0.0
@@ -1031,9 +1034,28 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 r.heater_min_today += hours * 60
             self.elec_kwh = round(self.elec_kwh + kwh, 4)
 
+    @property
+    def gas_source(self) -> str:
+        """smart_meter: kWh from a meter integration; estimate: boiler running time x input."""
+        src = self.house_cfg.get(CONF_ENERGY_SOURCE)
+        if src in (SOURCE_METER, SOURCE_ESTIMATE):
+            return src
+        return SOURCE_METER if self.house_cfg.get(CONF_GAS_METER) else SOURCE_ESTIMATE
+
+    def _gas_unit_price(self) -> tuple[float, str]:
+        """(£/kWh, where from): the rate sensor when it reads, else the fixed price."""
+        rate = self._float(self.house_cfg.get(CONF_GAS_RATE)) if self.gas_source == SOURCE_METER else None
+        if rate is not None:
+            unit = str((self._state(self.house_cfg.get(CONF_GAS_RATE)).attributes.get("unit_of_measurement") or "")).lower()
+            if unit.startswith("p/") or "pence" in unit:
+                rate /= 100
+            if 0 <= rate < 5:
+                return rate, "rate sensor"
+        return self.gas_price, "fixed"
+
     def _account(self, now: datetime, house: HouseSnapshot, plan: Plan) -> None:
         self._account_electric(now)
-        meter_entity = self.house_cfg.get(CONF_GAS_METER)
+        meter_entity = self.house_cfg.get(CONF_GAS_METER) if self.gas_source == SOURCE_METER else None
         meter = self._float(meter_entity)
         st = self._state(meter_entity)
         unit_m3 = bool(st and str(st.attributes.get("unit_of_measurement", "")).lower() in ("m³", "m3", "ft³"))
@@ -1048,7 +1070,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             self.outdoor.now_temp(now),
         )
         self.gas_kwh, self.gas_measured = self.energy.gas_kwh(unit_m3, self.boiler_kw)
-        self.gas_cost = self.energy.cost(self.gas_kwh, self.gas_price, self.standing)
+        self.gas_price_now, self.gas_price_from = self._gas_unit_price()
+        self.gas_cost = self.energy.price(self.gas_kwh, self.gas_price_now)
         self.kwh_per_dd = self.energy.kwh_per_degree_day(self.gas_kwh, self.settings.season_gate)
 
     async def _update_climate(self, now: datetime) -> None:

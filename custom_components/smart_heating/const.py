@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.9.7"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.9.8"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -14,6 +14,10 @@ CONF_OUTDOOR_TEMP = "outdoor_temperature"
 CONF_WEATHER = "weather"
 CONF_NIGHT_SCHEDULE = "night_schedule"
 CONF_GAS_METER = "gas_meter"
+CONF_GAS_RATE = "gas_rate"
+CONF_ENERGY_SOURCE = "energy_source"
+SOURCE_METER, SOURCE_ESTIMATE = "smart_meter", "estimate"
+ENERGY_SOURCES = [SOURCE_METER, SOURCE_ESTIMATE]
 CONF_ALARM = "alarm_panel"
 CONF_HEATING_TYPE = "heating_type"
 TYPE_TANK, TYPE_COMBI, TYPE_ELECTRIC, TYPE_HYBRID = "boiler_tank", "combi", "electric", "hybrid"
@@ -66,7 +70,6 @@ OPT_KEYS = [
 ]
 OPT_OVERRIDE_HOURS = "override_hours"
 OPT_GAS_PRICE = "gas_price"
-OPT_STANDING = "standing_charge"
 OPT_BOILER_KW = "boiler_input_kw"
 OPT_NOTIFY = "notify_service"
 OPT_SKIP_CAL = "skip_calibration"
@@ -75,7 +78,6 @@ OPT_NIGHT_END = "night_end"
 DEFAULT_NIGHT_START = "22:00:00"
 DEFAULT_NIGHT_END = "07:00:00"
 DEFAULT_GAS_PRICE = 0.06
-DEFAULT_STANDING = 0.30
 DEFAULT_BOILER_KW = 15.0
 OPT_ELEC_PRICE = "electricity_price"
 DEFAULT_ELEC_PRICE = 0.25

@@ -1,4 +1,4 @@
-"""Daily gas and boiler accounting."""
+"""Daily gas and boiler accounting. Unit costs only: standing charges are not heating costs."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -12,6 +12,7 @@ class EnergyDay:
     day: str = ""
     meter_start: float | None = None
     meter_last: float | None = None
+    meter_carry: float = 0.0  # counted before the meter reset today (a daily total at midnight)
     runtime_min: float = 0.0
     heat_runtime_min: float = 0.0
     hw_runtime_min: float = 0.0
@@ -20,6 +21,8 @@ class EnergyDay:
     outdoor_sum: float = 0.0
     outdoor_n: int = 0
     last_tick: str | None = None
+    cost: float = 0.0
+    priced_kwh: float = 0.0
 
     # ---------- feeding ----------
 
@@ -50,9 +53,16 @@ class EnergyDay:
             self.burns += 1
         self.was_on = boiler_on
         if meter is not None:
-            if self.meter_start is None or meter < (self.meter_last or meter):
-                self.meter_start = meter  # first reading or meter reset
-            self.meter_last = meter
+            last = self.meter_last
+            if self.meter_start is None or last is None:
+                self.meter_start = self.meter_last = meter
+            elif meter >= last:
+                self.meter_last = meter
+            elif meter < last / 2:
+                # Reset (e.g. a daily total at midnight): keep what was counted, restart from here.
+                self.meter_carry += last - self.meter_start
+                self.meter_start = self.meter_last = meter
+            # A small drop is a revised reading: ignore it.
         if outdoor is not None:
             self.outdoor_sum += outdoor
             self.outdoor_n += 1
@@ -64,12 +74,16 @@ class EnergyDay:
     def gas_kwh(self, meter_unit_m3: bool, boiler_input_kw: float) -> tuple[float, bool]:
         """(kWh today, measured?) Falls back to runtime x input when no meter."""
         if self.meter_start is not None and self.meter_last is not None:
-            used = self.meter_last - self.meter_start
+            used = self.meter_carry + self.meter_last - self.meter_start
             return round(used * M3_TO_KWH if meter_unit_m3 else used, 2), True
         return round(self.runtime_min / 60 * boiler_input_kw, 2), False
 
-    def cost(self, kwh: float, price_per_kwh: float, standing: float) -> float:
-        return round(kwh * price_per_kwh + standing, 2)
+    def price(self, kwh: float, price_per_kwh: float) -> float:
+        """Cost today: each new kWh at the unit price when it was used (rates can change)."""
+        if kwh > self.priced_kwh:
+            self.cost += (kwh - self.priced_kwh) * price_per_kwh
+        self.priced_kwh = kwh
+        return round(self.cost, 2)
 
     def outdoor_mean(self) -> float | None:
         return round(self.outdoor_sum / self.outdoor_n, 1) if self.outdoor_n else None

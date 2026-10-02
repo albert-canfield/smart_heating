@@ -262,10 +262,14 @@ class SmartHeatingCard extends HTMLElement {
       baseNight: house.target?.attributes.baseline_night,
       safety: house.target?.attributes.safety,
       gas: num(house.gas?.state),
+      gasEntity: house.gas?.entity_id,
       gasMeasured: house.gas?.attributes.measured === true,
       cost: num(house.cost?.state),
+      costEntity: house.cost?.entity_id,
       elec: num(house.elec?.state),
+      elecEntity: house.elec?.entity_id,
       elecCost: num(house.elecCost?.state),
+      elecCostEntity: house.elecCost?.entity_id,
       elecProjected: house.elec?.attributes.projected_today_kwh,
       elecMeasured: house.elec?.attributes.measured === true,
       log: (house.log?.attributes.entries || []).slice(0, 15),
@@ -463,9 +467,10 @@ class SmartHeatingCard extends HTMLElement {
           <dl>
             ${d.houseTemp != null ? `<div><dt>House</dt><dd>${d.houseTemp.toFixed(1)}°</dd></div>` : ""}
             ${d.outdoor != null ? `<div><dt>Outdoor today</dt><dd>${d.outdoor.toFixed(1)}°</dd></div>` : ""}
-            ${d.gas != null ? `<div><dt>Gas today${d.gasMeasured ? "" : " (est.)"}</dt><dd>${d.gas.toFixed(1)} kWh</dd></div>` : ""}
-            ${d.cost != null ? `<div><dt>Cost today</dt><dd>£${d.cost.toFixed(2)}</dd></div>` : ""}
-            ${d.elec != null ? `<div><dt>Electric today${d.elecMeasured ? "" : " (est.)"}</dt><dd>${d.elec.toFixed(1)} kWh${d.elecCost != null ? `, £${d.elecCost.toFixed(2)}` : ""}</dd></div>` : ""}
+            ${d.gas != null ? `<div ${moreInfo(d.gasEntity)}><dt>Gas today${d.gasMeasured ? "" : " (est.)"}</dt><dd>${d.gas.toFixed(1)} kWh</dd></div>` : ""}
+            ${d.cost != null ? `<div ${moreInfo(d.costEntity)}><dt>Gas cost today</dt><dd>£${d.cost.toFixed(2)}</dd></div>` : ""}
+            ${d.elec != null ? `<div ${moreInfo(d.elecEntity)}><dt>Electric today${d.elecMeasured ? "" : " (est.)"}</dt><dd>${d.elec.toFixed(1)} kWh</dd></div>` : ""}
+            ${d.elecCost != null ? `<div ${moreInfo(d.elecCostEntity)}><dt>Electric cost today</dt><dd>£${d.elecCost.toFixed(2)}</dd></div>` : ""}
           </dl>
           <p>${esc(d.reason || "")}</p>
           <button class="logbtn" data-log aria-expanded="${this._showLog}">${this._showLog ? "Hide log" : "Show log"}</button>
@@ -529,9 +534,10 @@ class SmartHeatingCard extends HTMLElement {
           </div>
           <footer class="slim">
             <dl>
-              ${d.gas != null ? `<div><dt>Gas${d.gasMeasured ? "" : " est."}</dt><dd>${d.gas.toFixed(1)} kWh</dd></div>` : ""}
-              ${d.cost != null ? `<div><dt>Cost</dt><dd>£${d.cost.toFixed(2)}</dd></div>` : ""}
-              ${d.elec != null ? `<div title="${d.elecProjected != null ? `About ${Number(d.elecProjected).toFixed(1)} kWh by midnight at this rate` : ""}"><dt>Electric${d.elecMeasured ? "" : " est."}</dt><dd>${d.elec.toFixed(1)} kWh${d.elecCost != null ? ` £${d.elecCost.toFixed(2)}` : ""}</dd></div>` : ""}
+              ${d.gas != null ? `<div ${moreInfo(d.gasEntity)}><dt>Gas${d.gasMeasured ? "" : " est."}</dt><dd>${d.gas.toFixed(1)} kWh</dd></div>` : ""}
+              ${d.cost != null ? `<div ${moreInfo(d.costEntity)}><dt>Gas cost</dt><dd>£${d.cost.toFixed(2)}</dd></div>` : ""}
+              ${d.elec != null ? `<div ${moreInfo(d.elecEntity, d.elecProjected != null ? `About ${Number(d.elecProjected).toFixed(1)} kWh by midnight at this rate` : "")}><dt>Electric${d.elecMeasured ? "" : " est."}</dt><dd>${d.elec.toFixed(1)} kWh</dd></div>` : ""}
+              ${d.elecCost != null ? `<div ${moreInfo(d.elecCostEntity)}><dt>Electric cost</dt><dd>£${d.elecCost.toFixed(2)}</dd></div>` : ""}
               ${d.houseGrade ? `<div><dt>Insulation</dt><dd><span class="grade g-${d.houseGrade}">${d.houseGrade}</span> ${d.houseScore}</dd></div>` : ""}
             </dl>
             <button class="logbtn" data-log aria-expanded="${this._showLog}">${this._showLog ? "Hide log" : "Log"}</button>
@@ -585,6 +591,14 @@ class SmartHeatingCard extends HTMLElement {
       this._call("smart_heating", "start_control", { skip_calibration: true });
     });
     root.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => this._setMode(b.dataset.mode)));
+    root.querySelectorAll("[data-more]").forEach((el) => {
+      const open = (e) => {
+        e.stopPropagation();
+        this.dispatchEvent(new CustomEvent("hass-more-info", { detail: { entityId: el.dataset.more }, bubbles: true, composed: true }));
+      };
+      el.addEventListener("click", open);
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(e); } });
+    });
     root.querySelectorAll("[data-room]").forEach((b) => b.addEventListener("click", () => {
       this._open = this._open === b.dataset.room ? null : b.dataset.room;
       this._render();
@@ -744,6 +758,12 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// Attributes that make a footer figure open its sensor's more-info dialog (history graph).
+function moreInfo(entityId, title = "") {
+  if (!entityId) return title ? `title="${esc(title)}"` : "";
+  return `data-more="${esc(entityId)}" role="button" tabindex="0" title="${esc(title ? `${title}. Show history` : "Show history")}"`;
+}
+
 const STYLE = `<style>
   :host {
     --sh-heat: #e07a2f;
@@ -817,6 +837,9 @@ const STYLE = `<style>
   footer dl { margin: 0; display: flex; flex-wrap: wrap; gap: 8px 20px; }
   footer dt { font-size: .75rem; color: var(--sh-muted); }
   footer dd { margin: 0; font-size: 1rem; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
+  footer [data-more] { cursor: pointer; border-radius: 6px; }
+  footer [data-more]:hover dd, footer [data-more]:focus-visible dd { color: var(--primary-color); }
+  footer [data-more]:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
   footer p { margin: 0; font-size: .75rem; color: var(--sh-muted); }
   .empty { padding: 8px 0; color: var(--sh-muted); }
 

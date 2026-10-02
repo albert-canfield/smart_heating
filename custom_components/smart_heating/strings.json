@@ -63,13 +63,44 @@
         "description": "All optional. You can add them later in Reconfigure.",
         "data": {
           "alarm_panel": "Away detection",
-          "night_schedule": "Night period",
-          "gas_meter": "Gas meter"
+          "night_schedule": "Night period"
         },
         "data_description": {
           "alarm_panel": "Alarm armed away, everyone out, or a toggle. Away = heating off, frost protection only.",
-          "night_schedule": "A schedule helper. Empty = 22:00 to 07:00, changeable in Configure.",
-          "gas_meter": "Cumulative meter in kWh or m³. Empty = estimated from boiler runtime."
+          "night_schedule": "A schedule helper. Empty = 22:00 to 07:00, changeable in Configure."
+        }
+      },
+      "energy": {
+        "title": "Gas use and cost",
+        "description": "Do you have a smart meter integration (for example Octopus Energy or Glow)? Smart Heating shows gas used and its cost today as sensors you can open for history. Standing charges are left out: only what the heating uses counts.",
+        "data": {
+          "energy_source": "Gas data from"
+        }
+      },
+      "energy_meter": {
+        "title": "Smart meter",
+        "description": "The meter covers all the gas in the house: heating, hot water and cooking.",
+        "data": {
+          "gas_meter": "Gas consumption",
+          "gas_rate": "Unit rate",
+          "gas_price": "Fixed unit price"
+        },
+        "data_description": {
+          "gas_meter": "A running total in kWh or m³, for example Octopus \"current accumulative consumption (kWh)\". A total that restarts at midnight is fine.",
+          "gas_rate": "Optional. A price sensor in £/kWh, for example Octopus \"current rate\". Each kWh is costed at the rate when it was used.",
+          "gas_price": "Used when there's no unit rate sensor, or it is unavailable."
+        }
+      },
+      "energy_estimate": {
+        "title": "Estimate from the boiler",
+        "description": "Gas is estimated while the boiler runs: from the boiler running sensor, or the heating switch or thermostat when there is none.",
+        "data": {
+          "boiler_input_kw": "Boiler gas input",
+          "gas_price": "Gas unit price"
+        },
+        "data_description": {
+          "boiler_input_kw": "From the boiler's data plate, for example 15 kW. The estimate assumes full input while it runs, so it reads high when the boiler modulates down.",
+          "gas_price": "Your unit rate in £/kWh, without the standing charge."
         }
       },
       "rooms": {
@@ -136,15 +167,13 @@
         "title": "Energy Prices",
         "data": {
           "gas_price": "Gas unit price",
-          "standing_charge": "Gas standing charge",
-          "boiler_input_kw": "Boiler input (for estimates)",
+          "boiler_input_kw": "Boiler gas input (for estimates)",
           "electricity_price": "Electricity unit price"
         },
         "data_description": {
-          "gas_price": "Your unit rate.",
-          "standing_charge": "Your daily standing charge.",
-          "boiler_input_kw": "Boiler gas input. Used only without a gas meter.",
-          "electricity_price": "For electric heater costs."
+          "gas_price": "Your unit rate, without the standing charge. With a unit rate sensor, used only when it is unavailable.",
+          "boiler_input_kw": "Used when gas is estimated from boiler running time.",
+          "electricity_price": "For electric heater costs, without the standing charge."
         }
       },
       "advanced": {
@@ -313,6 +342,12 @@
         "combi": "Combi boiler (no tank)",
         "electric": "Electric heaters only",
         "hybrid": "Boiler plus some electric heaters"
+      }
+    },
+    "energy_source": {
+      "options": {
+        "smart_meter": "Smart meter integration",
+        "estimate": "No smart meter: estimate from the boiler"
       }
     }
   },

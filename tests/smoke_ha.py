@@ -92,7 +92,7 @@ async def main() -> None:
     entry = ConfigEntry(
         version=1, minor_version=1, domain="smart_heating", title="Smart Heating",
         data={"boiler_switch": "switch.heating", "weather": "weather.home",
-              "outdoor_temperature": "sensor.outdoor_temperature", "gas_meter": "sensor.gas",
+              "outdoor_temperature": "sensor.outdoor_temperature", "gas_meter": "sensor.gas", "gas_rate": "sensor.gas_rate",
               "alarm_panel": "alarm_control_panel.alarmo"},
         options={}, source="user", unique_id="smart_heating", discovery_keys={},
         subentries_data=[
@@ -143,6 +143,13 @@ async def main() -> None:
     await c.async_refresh()
     print("gas today kWh", c.gas_kwh, "measured", c.gas_measured, "cost", c.gas_cost)
     assert c.gas_measured and abs(c.gas_kwh - 16.8) < 0.01
+    assert c.gas_cost == 1.01 and c.gas_price_from == "fixed", "unit price only, no standing charge"
+    # A unit rate sensor (here in pence) prices each new kWh at the rate when it was used.
+    hass.states.async_set("sensor.gas_rate", "10.0", {"unit_of_measurement": "p/kWh"})
+    hass.states.async_set("sensor.gas", "1002.0", {"unit_of_measurement": "m³"})
+    await c.async_refresh()
+    print("gas with rate sensor:", c.gas_kwh, "kWh | £", c.gas_cost, "|", c.gas_price_from, c.gas_price_now)
+    assert abs(c.gas_kwh - 22.4) < 0.01 and c.gas_cost == 1.57 and c.gas_price_from == "rate sensor"
 
     # Alarm armed away: heating off (safety only), mode preserved.
     hass.states.async_set("alarm_control_panel.alarmo", "armed_away")

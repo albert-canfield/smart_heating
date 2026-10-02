@@ -345,6 +345,23 @@ def test_energy_estimate_without_meter_and_rollover():
     assert d2.runtime_min == 0 and d2.day != d.day
 
 
+def test_energy_meter_daily_total_reset_and_revisions():
+    d = EnergyDay().tick(NOW, NOW.date(), False, False, False, 40.0, None)  # a daily total, already at 40 kWh
+    t = NOW
+    for v in (41.0, 40.9, 42.0, 0.5, 1.5):  # use, a revised reading, use, reset to a new total, use
+        t += timedelta(minutes=10)
+        d = d.tick(t, NOW.date(), False, False, False, v, None)
+    kwh, measured = d.gas_kwh(False, 15)
+    assert measured and kwh == 3.0  # 40 -> 42, then 0.5 -> 1.5; the 40.9 revision is ignored
+
+
+def test_energy_cost_at_the_rate_when_used_without_standing_charge():
+    d = EnergyDay()
+    assert d.price(10.0, 0.06) == 0.6
+    assert d.price(15.0, 0.10) == 1.1  # the 5 new kWh at the new rate
+    assert d.price(15.0, 0.50) == 1.1  # no new kWh, no new cost
+
+
 # ---------- valve-only (no boiler control) ----------
 
 def test_valve_only_opens_and_closes_directly():

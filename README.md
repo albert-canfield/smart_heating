@@ -76,7 +76,7 @@ Smart Heating then learns your home for 1 to 3 days while it only watches. You g
 
 # Documentation
 
-Version 0.9.7. Lifecycle:
+Version 0.9.8. Lifecycle:
 
 1. **Calibrating** (watching only): learns each room's heat-loss time constant, free-heat gain and warm-up rate from normal life. Decides and logs, never touches the boiler or TRVs.
 2. **Ready**: a notification says calibration is done (Home Assistant, plus your phone if a notify service is set).
@@ -128,7 +128,7 @@ Other fallbacks:
 - **No room thermometer**: the TRVs' or smart heaters' own reading is used (less accurate near the radiator).
 - **No outdoor sensor or forecast**: season gate and calibration are skipped, control is allowed straight away, predictions stay empty.
 - **No presence, lights or media**: rooms use their comfort schedule and manual "Heat now".
-- **No gas meter**: gas is estimated from boiler runtime, flagged as an estimate.
+- **No smart meter**: gas is estimated from boiler running time (boiler running sensor, or the heating switch or thermostat) times the boiler's gas input, flagged as an estimate.
 - **No away source**: away mode is never triggered; use the mode buttons.
 - **No night schedule**: 22:00 to 07:00, changeable in Configure.
 - **No areas or floors in HA**: rooms can still be added; floor is then picked in the room form.
@@ -152,8 +152,9 @@ Settings, Devices & services, Add integration, Smart Heating. A short wizard:
 3. **Your thermostat**: Setpoint or On / off (only if the boiler control is a thermostat).
 4. **Hot water**: tank heating sensor and *Hot water first* (tank and hybrid only).
 5. **Outside temperature**: weather forecast and/or an outdoor sensor.
-6. **Optional extras**: away detection, night schedule, gas meter.
-7. **Rooms**: areas with a thermometer, TRV or heater are pre-ticked and become rooms in one go.
+6. **Optional extras**: away detection, night schedule.
+7. **Gas use and cost** (gas types): with a smart meter integration (for example Octopus Energy or Glow), pick the gas consumption sensor (a running total in kWh or m³; a total that restarts at midnight is fine) and optionally a unit rate sensor in £/kWh. Without one, enter the boiler's gas input (for example 15 kW) and your unit price, and gas is estimated while the boiler runs.
+8. **Rooms**: areas with a thermometer, TRV or heater are pre-ticked and become rooms in one go.
 
 Everything can be changed later: **Reconfigure** repeats the wizard; **Configure** has short pages for *Temperatures & Night*, *Energy Prices*, *Import Rooms From Areas* and *Advanced*.
 
@@ -179,7 +180,7 @@ For each area it picks up: the area's own temperature and humidity sensors (Sett
 
 Room devices created by Smart Heating are placed in their area, so they appear on the area's page.
 
-**Configure** pages: *Temperatures & Night* (baseline day 17°C, night 15°C, night times, safety 12°C, season gate 14°C, override length), *Energy Prices* (gas, standing charge, boiler kW, electricity), *Advanced* (hysteresis, coasting, stack wait, boiler min run/off, TRV setpoints, hot water pause, notify service, Skip calibration). Pages only show what your heating type uses.
+**Configure** pages: *Temperatures & Night* (baseline day 17°C, night 15°C, night times, safety 12°C, season gate 14°C, override length), *Energy Prices* (gas unit price, boiler kW for estimates, electricity unit price), *Advanced* (hysteresis, coasting, stack wait, boiler min run/off, TRV setpoints, hot water pause, notify service, Skip calibration). Pages only show what your heating type uses.
 
 ## Entities
 
@@ -198,8 +199,9 @@ House device:
 - `sensor.smart_heating_forecast_minimum_24h`
 - `sensor.smart_heating_calibration` (% overall, per room in attributes), `binary_sensor.smart_heating_calibrated`
 - `sensor.smart_heating_house_heat_loss_time_constant` (hours, median of rooms)
-- `sensor.smart_heating_gas_today` (kWh; `measured` attribute says meter vs estimate; heating and hot water runtime)
-- `sensor.smart_heating_gas_cost_today` (£, includes standing charge)
+- `sensor.smart_heating_gas_today` (kWh; `measured` and `source` say smart meter vs estimate; heating and hot water runtime). A smart meter covers all the gas in the house, including hot water and cooking
+- `sensor.smart_heating_gas_cost_today` (£, unit costs only: standing charges are left out because the heating can't change them. With a unit rate sensor, each kWh is costed at the rate when it was used)
+- Both keep long-term statistics: tap them on the card for their history, find them in History, or add them to the Energy dashboard (gas consumption, and the cost as "an entity tracking the total costs")
 - `sensor.smart_heating_boiler_runtime_today`, `sensor.smart_heating_boiler_burns_today`
 - `sensor.smart_heating_gas_per_degree_day` (kWh per °C·day below the season gate: the weather-normalised efficiency figure)
 

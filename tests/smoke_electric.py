@@ -133,13 +133,34 @@ async def main() -> None:
     assert r["step_id"] == "hot_water"
     r = ser(await f2.async_step_hot_water({"hot_water_priority": True}))
     assert r["step_id"] == "outside"
+    r = ser(await f2.async_step_outside({"weather": "weather.home"}))
+    assert r["step_id"] == "extras" and "gas_meter" not in str(r["data_schema"].schema), r
+    r = ser(await f2.async_step_extras({}))
+    assert r["step_id"] == "energy", r
+    r = ser(await f2.async_step_energy({"energy_source": "smart_meter"}))
+    assert r["step_id"] == "energy_meter", r
+    r = ser(await f2.async_step_energy_meter({"gas_meter": "sensor.gas_kwh", "gas_rate": "sensor.gas_rate", "gas_price": 0.07}))
+    assert r["step_id"] == "rooms", r
+    r = await f2.async_step_rooms({"areas": []})
+    assert r["type"] == "create_entry" and r["data"]["energy_source"] == "smart_meter" and r["data"]["gas_rate"] == "sensor.gas_rate", r
+    assert r["options"] == {"gas_price": 0.07}, r["options"]
     f3 = SmartHeatingConfigFlow()
     f3.hass, f3.handler, f3.flow_id, f3.context = hass, "smart_heating", "f3", {"source": "user"}
     await f3.async_step_user()
     await f3.async_step_type({"heating_type": "combi"})
     r = ser(await f3.async_step_boiler({"boiler_switch": "switch.x"}))
     assert r["step_id"] == "outside", "combi skips hot water"
-    print("wizard (tank + thermostat, combi): steps ok")
+    await f3.async_step_outside({})
+    r = ser(await f3.async_step_extras({}))
+    assert r["step_id"] == "energy", r
+    r = ser(await f3.async_step_energy({"energy_source": "estimate"}))
+    assert r["step_id"] == "energy_estimate", r
+    r = ser(await f3.async_step_energy_estimate({"boiler_input_kw": 15, "gas_price": 0.06}))
+    assert r["step_id"] == "rooms", r
+    r = await f3.async_step_rooms({"areas": []})
+    assert r["data"]["energy_source"] == "estimate" and "gas_meter" not in r["data"], r["data"]
+    assert r["options"] == {"boiler_input_kw": 15, "gas_price": 0.06}, r["options"]
+    print("wizard (tank + thermostat + smart meter, combi + estimate): steps ok")
 
     # Run the electric coordinator.
     entry = ConfigEntry(

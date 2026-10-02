@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.8
+- Gas setup asks for a smart meter integration (for example Octopus Energy or Glow): a consumption sensor (kWh or m³, a total that restarts at midnight is fine) and an optional unit rate sensor. Without one, gas is estimated from boiler running time and the boiler's input (for example 15 kW).
+- Costs are unit costs only: the standing charge is gone from the calculations and from Configure. With a rate sensor, each kWh is costed at the rate when it was used.
+- Tap gas or electricity figures on the card to open their history. Daily cost sensors now reset cleanly in long-term statistics.
+
 ## 0.9.7
 - Gentler heat test: only rooms that still need heating data, each stops about 1° warmer than it started and never above 21.5° (was 23°). Rooms that already have their data stay closed; the test isn't offered when no room needs it.
 - New README with screenshots.

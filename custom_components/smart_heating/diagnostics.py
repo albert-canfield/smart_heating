@@ -80,8 +80,11 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry) -> dict
             "forecast_points": len(c.outdoor.forecast),
         },
         "gas": {
+            "source": c.gas_source,
             "kwh_today": c.gas_kwh,
             "measured": c.gas_measured,
+            "price_per_kwh": c.gas_price_now,
+            "price_from": c.gas_price_from,
             "cost_today": c.gas_cost,
             "kwh_per_degree_day": c.kwh_per_dd,
             "energy_day": c.energy.to_dict(),
