@@ -35,7 +35,7 @@ from ha_env import load_registries, pin_clock  # noqa: E402
 
 pin_clock()
 
-from homeassistant.core import HomeAssistant, ServiceResponse, SupportsResponse  # noqa: E402
+from homeassistant.core import HomeAssistant  # noqa: E402
 from homeassistant.config_entries import ConfigEntry, ConfigSubentryData  # noqa: E402
 from homeassistant.util import dt as dt_util  # noqa: E402
 
@@ -84,7 +84,6 @@ async def main() -> None:
 
     # A coffee shop: one area with a smart plug heater (measures power) and a smart climate heater.
     area = ar.async_get(hass).async_create("Cafe")
-    entry_stub = MagicMock(entry_id="stub")
     dreg, ereg = dr.async_get(hass), er.async_get(hass)
     from homeassistant.config_entries import ConfigEntry as _CE
     other = _CE(version=1, minor_version=1, domain="demo", title="demo", data={}, options={}, source="user", unique_id=None, discovery_keys={}, subentries_data=[])

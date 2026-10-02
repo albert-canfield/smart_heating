@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.7
+- Gentler heat test: only rooms that still need heating data, each stops about 1° warmer than it started and never above 21.5° (was 23°). Rooms that already have their data stay closed; the test isn't offered when no room needs it.
+- New README with screenshots.
+
 ## 0.9.6
 - Spinner in front of "Heat test running".
 - During a heat test the log and boiler demand show what the test does.

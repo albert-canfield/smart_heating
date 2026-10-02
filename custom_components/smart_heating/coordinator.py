@@ -47,7 +47,6 @@ from .const import (
     TYPE_TANK,
     TYPE_COMBI,
     TYPE_ELECTRIC,
-    TYPE_HYBRID,
     CONF_HEATERS,
     CONF_HEATER_W,
     CONF_HEATER_ECO_W,
@@ -88,6 +87,7 @@ from .const import (
     UPDATE_INTERVAL_S,
     HEAT_TEST_CAP,
     HEAT_TEST_MIN,
+    HEAT_TEST_RISE,
     BOILER_GUARD_S,
     BOILER_FLAP_WINDOW_MIN,
     BOILER_FLAP_MAX,
@@ -102,8 +102,6 @@ from .core import (
     Phase,
     Setpoints,
     calibration_summary,
-    classify,
-    house_tau,
     insulation,
     is_away,
     overall_progress,
@@ -121,6 +119,7 @@ from .core import (
     is_occupied,
     make_plan,
 )
+from .core.learn import HEAT_NEEDED
 
 _LOGGER = logging.getLogger(__name__)
 _BAD = (None, STATE_UNAVAILABLE, STATE_UNKNOWN, "")
@@ -652,7 +651,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         return out
 
     async def async_heat_test(self, start: bool = True, ignore_automations: bool = False) -> None:
-        """Calibration heat test: every radiator open, boiler on, about 2 h. Then the house cools."""
+        """Calibration heat test: rooms that still need heating data warm gently, boiler on. Then the house cools."""
         now = dt_util.utcnow()
         if not start:
             if self.heat_test:
@@ -682,17 +681,41 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 st = self._state(h)
                 if st is not None:
                     prev_heaters[h] = [st.state, st.attributes.get("temperature")]
+        # Gentle: only rooms that still need heating data, and none already near the cap.
+        start_temps = {r.room_id: self.room_temp(r) for r in self.rooms.values()}
+        controlled = [r for r in self.rooms.values() if r.trvs or r.heaters]
+        closed = [
+            r.room_id for r in controlled
+            if r.model.heat_n >= HEAT_NEEDED
+            or (start_temps[r.room_id] is not None and start_temps[r.room_id] >= HEAT_TEST_CAP - 0.3)
+        ]
+        to_open = [r for r in controlled if r.room_id not in closed]
+        if controlled and not to_open:
+            if all(r.model.heat_n >= HEAT_NEEDED for r in controlled):
+                self._log("Heat test not needed: every room already has its heating data")
+                raise HomeAssistantError("No room needs heating data any more, so the heat test isn't needed.")
+            raise HomeAssistantError(
+                f"The rooms that still need heating data are already near {HEAT_TEST_CAP:g}°. "
+                "Run the heat test when the house is cooler."
+            )
         boiler = self._state(self.boiler_entity)
         self.heat_test = {
             "until": (now + timedelta(minutes=HEAT_TEST_MIN)).isoformat(),
             "prev_trv": prev,
             "prev_heaters": prev_heaters,
             "boiler_was_on": self._commanded_on(boiler),
-            "closed": [],
+            "start_temps": start_temps,
+            "closed": closed,
         }
         await self._store.async_save(self._store_data())
-        self._log(f"Heat test started: all radiators open, boiler on for {HEAT_TEST_MIN // 60} h {HEAT_TEST_MIN % 60} min")
-        for room in self.rooms.values():
+        if controlled:
+            self._log(
+                f"Heat test started for {len(to_open)} room(s): up to {HEAT_TEST_RISE:g}° warmer, "
+                f"never above {HEAT_TEST_CAP:g}°"
+            )
+        else:
+            self._log(f"Heat test started: boiler on for up to {HEAT_TEST_MIN // 60} h {HEAT_TEST_MIN % 60} min")
+        for room in to_open:
             for trv in room.trvs:
                 await self._set_trv(trv, None, open_max=True)
             for h in room.heaters:
@@ -708,27 +731,38 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         return max(0, round((until - dt_util.utcnow()).total_seconds() / 60)) if until else 0
 
     async def _run_heat_test(self, plan: Plan) -> None:
-        """Keep the test going: cap hot rooms, end on time."""
+        """Keep the test going: close rooms that are done, end on time."""
         test = self.heat_test
         if not test:
             return
         left = self.heat_test_left_min or 0
+        starts = test.setdefault("start_temps", {})
         live = [r for r in self.rooms.values() if (r.trvs or r.heaters) and r.room_id not in test["closed"]]
         for room in live:
             t = self.room_temp(room)
-            if t is not None and t >= HEAT_TEST_CAP:
-                test["closed"].append(room.room_id)
-                self._log(f"Heat test: reached {t:.1f}°, heat closed", room=room.cfg.name)
-                for trv in room.trvs:
-                    await self._set_trv(trv, self.settings.trv_closed)
-                for h in room.heaters:
-                    await self._set_heater(h, False, 0, room)
+            if starts.get(room.room_id) is None and t is not None:
+                starts[room.room_id] = t  # no reading at the start (or a test from before 0.9.7)
+            start = starts.get(room.room_id)
+            stop = min(HEAT_TEST_CAP, start + HEAT_TEST_RISE) if start is not None else HEAT_TEST_CAP
+            has_data = room.model.heat_n >= HEAT_NEEDED
+            if not has_data and (t is None or t < stop):
+                continue
+            test["closed"].append(room.room_id)
+            self._log(
+                "Heat test: has its heating data, radiator closed" if has_data
+                else f"Heat test: reached {t:.1f}°, radiator closed",
+                room=room.cfg.name,
+            )
+            for trv in room.trvs:
+                await self._set_trv(trv, self.settings.trv_closed)
+            for h in room.heaters:
+                await self._set_heater(h, False, 0, room)
         if self.heat_test is not test:
             return
         controlled = [r for r in self.rooms.values() if r.trvs or r.heaters]
-        all_capped = bool(controlled) and all(r.room_id in test["closed"] for r in controlled)
-        if left <= 0 or all_capped:
-            await self._finish_heat_test("finished" if left <= 0 else "every room warm")
+        all_closed = bool(controlled) and all(r.room_id in test["closed"] for r in controlled)
+        if left <= 0 or all_closed:
+            await self._finish_heat_test("finished" if left <= 0 else "done for every room")
             return
         if self.settings.hw_priority and self._is_on(self.house_cfg.get(CONF_HW_CALLING)):
             return  # tank heating first; the test carries on after

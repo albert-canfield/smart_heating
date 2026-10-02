@@ -32,7 +32,6 @@ from .const import (
     CONF_MEDIA,
     CONF_NAME,
     CONF_NIGHT_SCHEDULE,
-    CONF_OUTDOOR_MEAN,
     CONF_OUTDOOR_TEMP,
     CONF_WEATHER,
     CONF_GAS_METER,

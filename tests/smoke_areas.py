@@ -54,7 +54,7 @@ async def main():
     # Office: thermometer device + TRV device (TRV also exposes a temperature sensor that must be ignored)
     th = devs.async_get_or_create(config_entry_id=None, identifiers={("t", "th_office")}, name="TH office") if False else None
     t_office = entity("sensor", "th_office_t", office.id, dc="temperature")
-    h_office = entity("sensor", "th_office_h", office.id, dc="humidity")
+    entity("sensor", "th_office_h", office.id, dc="humidity")
     trv = entity("climate", "office_trv", office.id)
     entity("sensor", "office_trv_battery_temp", office.id, dc="temperature", name="TRV internal temperature")
     # Living: temperature via area setting, presence, light
@@ -65,7 +65,6 @@ async def main():
     l_living = entity("light", "living_ceiling", living.id)
     entity("sensor", "hall_t", hall.id, dc="temperature")
     # Bedroom: Shelly relay internal temperature (45°C, not diagnostic), Shelly diagnostic temp, an ESP board temp, and the real TH sensor
-    from homeassistant.helpers.device_registry import DeviceInfo
     from homeassistant.config_entries import ConfigEntry as _CE
     fake = _CE(version=1, minor_version=1, domain="test", title="t", data={}, options={}, source="user", unique_id=None, discovery_keys={}, subentries_data=[])
     # Device registry only needs the entry to look registered.
@@ -123,7 +122,6 @@ async def main():
     assert c.away and c.data.status == "away"
     # Retention index with a learned model.
     from custom_components.smart_heating.core.learn import RoomModel
-    import math
     from datetime import timedelta
     from homeassistant.util import dt as dt_util
     m = RoomModel.new(); tin = 20.0; t = dt_util.utcnow()

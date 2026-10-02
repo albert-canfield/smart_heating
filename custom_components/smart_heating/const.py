@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.9.6"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.9.7"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -96,8 +96,9 @@ SETPOINT_MAX = 25.0
 SETPOINT_STEP = 0.5
 
 # Heat test (speeds up calibration)
-HEAT_TEST_MIN = 135  # 10 min warm-up + 2 h of heating samples
-HEAT_TEST_CAP = 23.0  # a room above this closes its TRVs
+HEAT_TEST_MIN = 135  # maximum duration: 10 min warm-up + 2 h of heating samples
+HEAT_TEST_CAP = 21.5  # a room never goes above this during the test
+HEAT_TEST_RISE = 1.0  # a room stops once it is this much warmer than at the start
 SERVICE_HEAT_TEST = "heat_test"
 SERVICE_START_CONTROL = "start_control"
 

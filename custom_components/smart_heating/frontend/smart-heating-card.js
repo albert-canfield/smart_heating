@@ -379,9 +379,9 @@ class SmartHeatingCard extends HTMLElement {
       </div>${this._tipBox(key, tip)}`;
     const eta = c.eta_hours ? (c.eta_hours > 36 ? `about ${Math.round(c.eta_hours / 24 * 2) / 2} days left` : `about ${c.eta_hours} h left`) : "almost done";
     const test = d.heatTest != null
-      ? `<div class="speed"><p>${SPIN}<b>Heat test running</b>, ${fmtMin(d.heatTest)} left. Every radiator is open and the boiler is on. Rooms close at 23°.</p>
+      ? `<div class="speed"><p>${SPIN}<b>Heat test running</b>, ${fmtMin(d.heatTest)} left. Rooms that need data are heating gently; each stops at 1° warmer, never above 21.5°.</p>
          <button data-test="stop">Stop test</button></div>`
-      : c.can_heat_test && (c.heating_hours_left > 0 || c.variety_left_c > 0) ? `
+      : c.can_heat_test && c.heating_hours_left > 0 ? `
         <div class="speed">
           <p><b>Speed it up</b></p>
           <ol>
@@ -390,7 +390,7 @@ class SmartHeatingCard extends HTMLElement {
               <button data-test="start">${ICON_FLAME}Run heat test</button>
               <button class="link" data-test="force">Run anyway</button>` : `
               <button class="primary" data-test="start">${ICON_FLAME}Run heat test</button>`}
-              <span>About 2 h: opens every radiator and runs the boiler, then the house cools. If anything else switches the heating, the test stops by itself.</span></li>
+              <span>Gentle: only rooms that still need data, each warmed by about 1° (never above 21.5°), usually under 2 h. Then the house cools. If anything else switches the heating, the test stops.</span></li>
             <li><span>Leave the heating off overnight. Each night gives up to 10 h of cooling data.</span></li>
           </ol>
         </div>`

@@ -41,6 +41,8 @@ from homeassistant.util import dt as dt_util  # noqa: E402
 
 from custom_components.smart_heating.coordinator import HeatingCoordinator  # noqa: E402
 from custom_components.smart_heating.core import Mode  # noqa: E402
+from custom_components.smart_heating.core.learn import HEAT_NEEDED  # noqa: E402
+from homeassistant.exceptions import HomeAssistantError  # noqa: E402
 import custom_components.smart_heating.coordinator as _coord  # noqa: E402
 
 _coord.TRV_STAGGER_S = 0
@@ -107,7 +109,6 @@ async def main() -> None:
     c = HeatingCoordinator(hass, entry)
     c.async_config_entry_first_refresh = c.async_refresh  # no config entry manager here
     # Presence must be held for 5 min to count: backdate it.
-    st = hass.states.get("binary_sensor.living_presence")
     hass.states.async_set("binary_sensor.living_presence", "on", force_update=True)
     object.__setattr__(hass.states.get("binary_sensor.living_presence"), "last_changed", dt_util.utcnow() - timedelta(minutes=10))
     object.__setattr__(hass.states.get("switch.heating"), "last_changed", dt_util.utcnow() - timedelta(minutes=90))
@@ -180,28 +181,70 @@ async def main() -> None:
     assert c.data.rooms["living"].need.target == 20.0, c.data.rooms["living"].need.target
     print("setpoints ok: living", c.room_comfort(c.rooms["living"]), "hall", c.room_comfort(c.rooms["hall"]))
 
-    # Heat test: opens every TRV to max, boiler on, caps a hot room, restores on stop.
+    # Heat test: opens only rooms that still need heating data, boiler on, closes a room at
+    # 1° above its start or 21.5°, ends when every room is closed and restores the TRVs.
+    async def tick():
+        await c.async_refresh()
+        await asyncio.sleep(0.3)
+        await hass.async_block_till_done()
+
+    def boiler_rested():
+        object.__setattr__(hass.states.get("switch.heating"), "last_changed", dt_util.utcnow() - timedelta(minutes=30))
+        c._boiler_cmd_at = dt_util.utcnow() - timedelta(minutes=30)
+        c._boiler_cmds = []
+
+    trv_closed = c.settings.trv_closed
     hass.states.async_set("switch.heating", "off")
-    object.__setattr__(hass.states.get("switch.heating"), "last_changed", dt_util.utcnow() - timedelta(minutes=30))
-    c._boiler_cmd_at = dt_util.utcnow() - timedelta(minutes=30)
+    boiler_rested()
     hass.states.async_set("climate.bed_trv", "heat", {"temperature": 16, "max_temp": 30})
+    hass.states.async_set("sensor.bed_t", "20.8")
+    c.rooms["living"].model.heat_n = HEAT_NEEDED  # living already has its heating data
     c.mode, c.monitor_only = Mode.CONTINUOUS, True
     calls.clear()
     await c.async_heat_test(True)
     await hass.async_block_till_done()
     assert ("climate", "set_temperature", {"entity_id": "climate.bed_trv", "temperature": 30.0}) in calls, calls
+    assert not any(cl[2].get("entity_id") == "climate.living_trv" for cl in calls), calls
+    assert "living" in c.heat_test["closed"] and c.heat_test["start_temps"]["bed"] == 20.8
     assert ("switch", "turn_on", {"entity_id": "switch.heating"}) in calls
     assert c.data.status == "testing", c.data.status
-    hass.states.async_set("sensor.bed_t", "23.4")
-    await c.async_refresh()
-    await asyncio.sleep(0.3)
+    hass.states.async_set("sensor.bed_t", "21.4")  # stop is min(21.5, 20.8 + 1)
+    await tick()
+    assert c.heat_test is not None and "bed" not in c.heat_test["closed"]
+    hass.states.async_set("sensor.bed_t", "21.5")
+    await tick()
+    assert ("climate", "set_temperature", {"entity_id": "climate.bed_trv", "temperature": trv_closed}) in calls, calls
+    assert c.heat_test is None, "every room closed: the test ends by itself"
+    assert ("climate", "set_temperature", {"entity_id": "climate.bed_trv", "temperature": 16.0}) in calls, calls
+    assert hass.states.get("switch.heating").state == "off", "test end must switch off even inside the guard time"
+    print("heat test cap ok:", [e["message"] for e in list(c.log)[:3]])
+
+    # A room stops 1° above where it started.
+    c.rooms["living"].model.heat_n = 0
+    hass.states.async_set("sensor.bed_t", "19.5")
+    hass.states.async_set("sensor.living_t", "19.0")
+    boiler_rested()
+    await c.async_heat_test(True)
     await hass.async_block_till_done()
-    assert ("climate", "set_temperature", {"entity_id": "climate.bed_trv", "temperature": 5.0}) in calls, calls
+    hass.states.async_set("sensor.living_t", "20.0")
+    await tick()
+    assert "living" in c.heat_test["closed"] and "bed" not in c.heat_test["closed"], c.heat_test["closed"]
     await c.async_heat_test(False)
     await hass.async_block_till_done()
     assert c.heat_test is None
-    assert ("climate", "set_temperature", {"entity_id": "climate.bed_trv", "temperature": 16.0}) in calls, calls
-    assert hass.states.get("switch.heating").state == "off", "test end must switch off even inside the guard time"
+
+    # Not offered when every room already has its heating data.
+    for r in c.rooms.values():
+        r.model.heat_n = HEAT_NEEDED
+    calls.clear()
+    try:
+        await c.async_heat_test(True)
+        raise SystemExit("expected: heat test not needed")
+    except HomeAssistantError as err:
+        assert "isn't needed" in str(err)
+    assert c.heat_test is None and not calls, calls
+    for r in c.rooms.values():
+        r.model.heat_n = 0
 
     # Something else switches the boiler off during a heat test: back off and stop the test, never fight.
     hass.states.async_set("sensor.bed_t", "19.5")

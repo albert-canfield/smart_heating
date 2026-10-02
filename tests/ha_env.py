@@ -25,7 +25,12 @@ def pin_clock() -> None:
 
 async def load_registries(hass) -> None:
     """Floor, area, device and entity registries. HA 2026.9+ needs async_setup first where it exists."""
-    from homeassistant.helpers import area_registry, device_registry, entity_registry, floor_registry
+    from homeassistant.helpers import (
+        area_registry,
+        device_registry,
+        entity_registry,
+        floor_registry,
+    )
 
     for m in (floor_registry, area_registry, device_registry, entity_registry):
         if hasattr(m, "async_setup"):

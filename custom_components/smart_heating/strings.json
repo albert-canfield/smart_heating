@@ -463,7 +463,7 @@
   "services": {
     "heat_test": {
       "name": "Heat test",
-      "description": "Speeds up calibration: opens every radiator and runs the boiler for about 2 h, then lets the house cool. Pause your own heating schedule first.",
+      "description": "Speeds up calibration: gently heats only the rooms that still need heating data (each about 1° warmer, never above 21.5°, usually under 2 h), then lets the house cool. Pause your own heating schedule first.",
       "fields": {
         "start": {
           "name": "Start",

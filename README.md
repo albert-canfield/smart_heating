@@ -76,7 +76,7 @@ Smart Heating then learns your home for 1 to 3 days while it only watches. You g
 
 # Documentation
 
-Version 0.9.6. Lifecycle:
+Version 0.9.7. Lifecycle:
 
 1. **Calibrating** (watching only): learns each room's heat-loss time constant, free-heat gain and warm-up rate from normal life. Decides and logs, never touches the boiler or TRVs.
 2. **Ready**: a notification says calibration is done (Home Assistant, plus your phone if a notify service is set).
@@ -89,7 +89,7 @@ Version 0.9.6. Lifecycle:
 | What does it need? | Per room: about 24 h of **cooling data** (boiler off for at least 1 h), a 2° **range** in the inside/outside gap, and about 2 h of **heating data** (boiler on, radiator open). Done when 80% of rooms have all three. |
 | How long? | Usually 1 to 3 days. The card shows progress, what it's collecting now, and roughly how long is left: tap the **Calibrating** badge. |
 | Can I use it meanwhile? | It only watches and logs. Keep your existing heating as it is. |
-| How do I speed it up? | Tap **Run heat test** on the card (about 2 h: every radiator open, boiler on, rooms capped at 23°, then the house cools). Pause your own heating schedule while it runs. Leave the heating off overnight: each night gives up to 10 h of cooling data. |
+| How do I speed it up? | Tap **Run heat test** on the card. It is gentle: only rooms that still need heating data are opened, each stops about 1° warmer than it started and never above 21.5°, usually in under 2 h. Then the house cools. Pause your own heating schedule while it runs. Leave the heating off overnight: each night gives up to 10 h of cooling data. |
 | When it's done? | A notification arrives and the card shows **Start control**. Tap it. |
 | Can I skip it? | Yes: **Start now without calibration** on the card, or *Skip calibration* in Configure. Defaults are used; learning continues in the background. |
 

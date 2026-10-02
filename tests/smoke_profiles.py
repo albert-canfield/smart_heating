@@ -35,12 +35,11 @@ from ha_env import load_registries, pin_clock  # noqa: E402
 
 pin_clock()
 
-from homeassistant.core import HomeAssistant, ServiceResponse, SupportsResponse  # noqa: E402
+from homeassistant.core import HomeAssistant, SupportsResponse  # noqa: E402
 from homeassistant.config_entries import ConfigEntry, ConfigSubentryData  # noqa: E402
 from homeassistant.util import dt as dt_util  # noqa: E402
 
 from custom_components.smart_heating.coordinator import HeatingCoordinator  # noqa: E402
-from custom_components.smart_heating.core import Mode  # noqa: E402
 
 
 
