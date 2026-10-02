@@ -1,0 +1,43 @@
+name: Bug report
+description: Something isn't working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting. Diagnostics make most problems quick to find.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you expected and what you saw instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: heating
+    attributes:
+      label: Heating type
+      options:
+        - Boiler with a hot water tank
+        - Combi boiler
+        - Electric heaters only
+        - Boiler plus some electric heaters
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: "Smart Heating 0.9.6, Home Assistant 2026.2.3"
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Settings, Devices & services, Smart Heating, three-dot menu, Download diagnostics. Drag the file here.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from Settings, System, Logs (filter by smart_heating).
+      render: text

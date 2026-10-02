@@ -1,0 +1,21 @@
+{
+  "domain": "smart_heating",
+  "name": "Smart Heating",
+  "after_dependencies": [
+    "logbook"
+  ],
+  "codeowners": [
+    "@albert-canfield"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "http",
+    "frontend"
+  ],
+  "documentation": "https://github.com/albert-canfield/smart_heating",
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/albert-canfield/smart_heating/issues",
+  "requirements": [],
+  "version": "0.9.6"
+}

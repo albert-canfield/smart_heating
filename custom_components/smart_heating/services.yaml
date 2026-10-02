@@ -1,0 +1,16 @@
+heat_test:
+  fields:
+    start:
+      default: true
+      selector:
+        boolean:
+    ignore_automations:
+      default: false
+      selector:
+        boolean:
+start_control:
+  fields:
+    skip_calibration:
+      default: false
+      selector:
+        boolean:

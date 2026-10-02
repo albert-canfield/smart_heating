@@ -1,0 +1,489 @@
+{
+  "config": {
+    "step": {
+      "type": {
+        "title": "What heats your home?",
+        "description": "Pick the closest match. The next steps only ask what this setup needs.",
+        "data": {
+          "heating_type": "Heating"
+        },
+        "data_description": {
+          "heating_type": "Not sure? A hot water tank in a cupboard means the first option. Hot water straight from the boiler, no tank, means combi."
+        }
+      },
+      "boiler": {
+        "title": "Your boiler",
+        "description": "How Home Assistant turns the heating on. Both are optional: leave empty if only your TRVs are smart.",
+        "data": {
+          "boiler_switch": "Heating on/off",
+          "boiler_on_sensor": "Boiler running sensor (optional)"
+        },
+        "data_description": {
+          "boiler_switch": "The relay, smart switch or thermostat that calls the boiler for heating.",
+          "boiler_on_sensor": "On while the boiler actually burns. Makes learning and gas figures more accurate."
+        }
+      },
+      "thermostat": {
+        "title": "Your thermostat",
+        "description": "How Smart Heating should drive it.",
+        "data": {
+          "thermostat_style": "Control style"
+        },
+        "data_description": {
+          "thermostat_style": "Setpoint is recommended: if Home Assistant stops, the thermostat keeps the last sensible temperature."
+        }
+      },
+      "hot_water": {
+        "title": "Hot water",
+        "data": {
+          "hot_water_system": "Hot water comes from",
+          "hw_calling": "Tank heating sensor (optional)",
+          "hot_water_priority": "Hot water first"
+        },
+        "data_description": {
+          "hot_water_system": "Tank: a cylinder in a cupboard (also known as S-plan or Y-plan). Combi: hot water straight from the boiler.",
+          "hw_calling": "On while the tank is heating, e.g. its zone valve or programmer channel.",
+          "hot_water_priority": "Pause room heating while the tank heats, so showers are ready sooner. Combi boilers do this by themselves."
+        }
+      },
+      "outside": {
+        "title": "Outside temperature",
+        "description": "Used to skip heating on mild days, predict tonight and learn how your house holds heat. One of the two is enough.",
+        "data": {
+          "weather": "Weather forecast",
+          "outdoor_temperature": "Outdoor thermometer"
+        },
+        "data_description": {
+          "weather": "Your weather integration, e.g. weather.forecast_home.",
+          "outdoor_temperature": "A real outdoor sensor, if you have one. Blended with the forecast."
+        }
+      },
+      "extras": {
+        "title": "Optional extras",
+        "description": "All optional. You can add them later in Reconfigure.",
+        "data": {
+          "alarm_panel": "Away detection",
+          "night_schedule": "Night period",
+          "gas_meter": "Gas meter"
+        },
+        "data_description": {
+          "alarm_panel": "Alarm armed away, everyone out, or a toggle. Away = heating off, frost protection only.",
+          "night_schedule": "A schedule helper. Empty = 22:00 to 07:00, changeable in Configure.",
+          "gas_meter": "Cumulative meter in kWh or m³. Empty = estimated from boiler runtime."
+        }
+      },
+      "rooms": {
+        "title": "Rooms",
+        "description": "Each Home Assistant area becomes a room, with its thermometer, TRVs or heaters, presence sensors and lights filled in. {count} area(s) found. You can add, remove or adjust rooms any time.\n\nAfter this, Smart Heating learns your house for 1 to 3 days. It only watches until then.",
+        "data": {
+          "areas": "Areas to heat"
+        },
+        "data_description": {
+          "areas": "Untick areas you don't want heated. Gardens are skipped."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Smart Heating is already set up.",
+      "reconfigure_successful": "Saved."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Smart Heating",
+        "menu_options": {
+          "temperatures": "Temperatures & Night",
+          "prices": "Energy Prices",
+          "import_areas": "Import Rooms From Areas",
+          "advanced": "Advanced"
+        }
+      },
+      "import_areas": {
+        "title": "Import Rooms From Areas",
+        "description": "Each selected area becomes a room, with its floor, sensors, TRVs, presence sensors and lights picked up automatically. {count} new area(s) are pre-selected; if all areas are already rooms, those are selected instead. Turn on the re-detect option to fix rooms whose thermometer was picked wrongly.",
+        "data": {
+          "areas": "Areas",
+          "refresh_sensors": "Re-detect thermometer and humidity sensor for rooms already added"
+        },
+        "data_description": {
+          "areas": "Each area becomes a room. Gardens are skipped.",
+          "refresh_sensors": "Re-pick thermometer and humidity for rooms already added. Other settings kept."
+        }
+      },
+      "temperatures": {
+        "title": "Temperatures & Night",
+        "data": {
+          "baseline_day": "Baseline (day)",
+          "baseline_night": "Baseline (night)",
+          "night_start": "Night starts",
+          "night_end": "Night ends",
+          "safety": "Safety floor (frost/damp, always on)",
+          "season_gate": "Season gate (outdoor mean)",
+          "override_hours": "Room override duration"
+        },
+        "data_description": {
+          "baseline_day": "Empty rooms never drop below this by day.",
+          "baseline_night": "Empty rooms never drop below this at night.",
+          "night_start": "Night settings begin.",
+          "night_end": "Day settings resume.",
+          "safety": "Frost and damp floor. Always on, even when Off or away.",
+          "season_gate": "Outdoor day mean above this = no comfort heating.",
+          "override_hours": "How long Heat now / Turn off lasts."
+        }
+      },
+      "prices": {
+        "title": "Energy Prices",
+        "data": {
+          "gas_price": "Gas unit price",
+          "standing_charge": "Gas standing charge",
+          "boiler_input_kw": "Boiler input (for estimates)",
+          "electricity_price": "Electricity unit price"
+        },
+        "data_description": {
+          "gas_price": "Your unit rate.",
+          "standing_charge": "Your daily standing charge.",
+          "boiler_input_kw": "Boiler gas input. Used only without a gas meter.",
+          "electricity_price": "For electric heater costs."
+        }
+      },
+      "advanced": {
+        "title": "Advanced",
+        "description": "Defaults suit most homes.",
+        "data": {
+          "hysteresis": "Hysteresis",
+          "coast_rate": "Coasting rise rate",
+          "coast_horizon_min": "Coasting horizon",
+          "stack_max_wait_min": "Upper floor max wait",
+          "min_run_min": "Boiler min run",
+          "min_off_min": "Boiler min off",
+          "trv_open_offset": "TRV open offset",
+          "trv_closed": "TRV closed setpoint",
+          "hw_max_pause_min": "Hot water max pause",
+          "notify_service": "Notify service (e.g. notify.mobile_app_phone)",
+          "skip_calibration": "Skip calibration"
+        },
+        "data_description": {
+          "hysteresis": "Heat starts this far below target. Bigger = fewer burns.",
+          "coast_rate": "Rising this fast without heat = wait, don't fire.",
+          "coast_horizon_min": "Wait only if target is reached within this time.",
+          "stack_max_wait_min": "Longest an upper room waits for heat rising from below.",
+          "min_run_min": "Shortest burn. Protects the boiler.",
+          "min_off_min": "Shortest rest between burns.",
+          "trv_open_offset": "Open TRV = target plus this. Caps the room if HA stops.",
+          "trv_closed": "Closed TRV setpoint.",
+          "hw_max_pause_min": "Longest heating pauses for hot water.",
+          "notify_service": "Phone notification when calibration finishes, e.g. notify.mobile_app_phone.",
+          "skip_calibration": "Start control without waiting for calibration (usually 1 to 3 days). Defaults are used until learning catches up in the background."
+        }
+      }
+    }
+  },
+  "config_subentries": {
+    "room": {
+      "entry_type": "Room",
+      "initiate_flow": {
+        "user": "Add room"
+      },
+      "step": {
+        "user": {
+          "title": "Add room",
+          "description": "Pick the Home Assistant area. Name and floor come from the area.",
+          "data": {
+            "area_id": "Area"
+          },
+          "data_description": {
+            "area_id": "Name and floor come from the area."
+          }
+        },
+        "reconfigure": {
+          "title": "{area}",
+          "data": {
+            "floor": "Floor",
+            "priority": "Priority",
+            "comfort": "Comfort temperature",
+            "temperature_sensor": "Temperature sensor",
+            "humidity_sensor": "Humidity sensor",
+            "trvs": "TRVs",
+            "presence": "Presence sensors",
+            "lights": "Lights",
+            "media": "Media players",
+            "schedule": "Comfort schedule",
+            "heaters": "Electric heaters",
+            "heater_power_w": "Heater power",
+            "heater_eco_power_w": "Heater eco power",
+            "radiator": "Has a boiler radiator"
+          },
+          "description": "Floor: {floor}.\n\nThermometer candidates: {detected}.",
+          "data_description": {
+            "floor": "Only asked when the area has no floor.",
+            "priority": "A living and sleeping. B occasional. C halls and service.",
+            "comfort": "Target while the room is in use.",
+            "temperature_sensor": "Head-height thermometer, away from the radiator. Not the TRV.",
+            "humidity_sensor": "Optional. For damp protection.",
+            "trvs": "Smart radiator valves. Empty = radiator not controlled.",
+            "presence": "Presence or motion. Marks the room in use.",
+            "lights": "Light on = room in use, for 30 min max without presence.",
+            "media": "Playing = room in use.",
+            "schedule": "On = room wanted warm, e.g. bedroom evenings.",
+            "heaters": "Smart plugs or smart heaters Smart Heating switches on and off.",
+            "heater_power_w": "Full power from the label, e.g. 2000 W. Not needed if the plug measures power.",
+            "heater_eco_power_w": "Optional. Used when a smart heater reports eco mode, e.g. 1000 W.",
+            "radiator": "Off if this room has only electric heat."
+          }
+        },
+        "details": {
+          "title": "{area}",
+          "description": "Floor: {floor}. What we found in this area is filled in; adjust if needed.\n\nThermometer candidates: {detected}.",
+          "data": {
+            "floor": "Floor",
+            "priority": "Priority",
+            "comfort": "Comfort temperature",
+            "temperature_sensor": "Temperature sensor",
+            "humidity_sensor": "Humidity sensor",
+            "trvs": "TRVs",
+            "presence": "Presence sensors",
+            "lights": "Lights",
+            "media": "Media players",
+            "schedule": "Comfort schedule",
+            "heaters": "Electric heaters",
+            "heater_power_w": "Heater power",
+            "heater_eco_power_w": "Heater eco power",
+            "radiator": "Has a boiler radiator"
+          },
+          "data_description": {
+            "floor": "Only asked when the area has no floor.",
+            "priority": "A living and sleeping. B occasional. C halls and service.",
+            "comfort": "Target while the room is in use.",
+            "temperature_sensor": "Head-height thermometer, away from the radiator. Not the TRV.",
+            "humidity_sensor": "Optional. For damp protection.",
+            "trvs": "Smart radiator valves. Empty = radiator not controlled.",
+            "presence": "Presence or motion. Marks the room in use.",
+            "lights": "Light on = room in use, for 30 min max without presence.",
+            "media": "Playing = room in use.",
+            "schedule": "On = room wanted warm, e.g. bedroom evenings.",
+            "heaters": "Smart plugs or smart heaters Smart Heating switches on and off.",
+            "heater_power_w": "Full power from the label, e.g. 2000 W. Not needed if the plug measures power.",
+            "heater_eco_power_w": "Optional. Used when a smart heater reports eco mode, e.g. 1000 W.",
+            "radiator": "Off if this room has only electric heat."
+          }
+        }
+      },
+      "abort": {
+        "reconfigure_successful": "Room saved."
+      },
+      "error": {
+        "no_temperature": "Pick a temperature sensor or at least one TRV, so the room has a temperature to work with.",
+        "already_added": "This area is already a room."
+      }
+    }
+  },
+  "selector": {
+    "floor": {
+      "options": {
+        "0": "Ground",
+        "1": "1st floor",
+        "2": "2nd floor",
+        "3": "3rd floor"
+      }
+    },
+    "priority": {
+      "options": {
+        "a": "A: main living / sleeping",
+        "b": "B: occasional",
+        "c": "C: transit / service"
+      }
+    },
+    "hot_water_system": {
+      "options": {
+        "tank": "A hot water tank",
+        "combi": "A combi boiler (no tank)",
+        "none": "Not from this boiler"
+      }
+    },
+    "thermostat_style": {
+      "options": {
+        "setpoint": "Setpoint: it gets the target temperature",
+        "relay": "On / off: heat at maximum or off"
+      }
+    },
+    "heating_type": {
+      "options": {
+        "boiler_tank": "Boiler with a hot water tank",
+        "combi": "Combi boiler (no tank)",
+        "electric": "Electric heaters only",
+        "hybrid": "Boiler plus some electric heaters"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "heating": "Heating",
+          "idle": "Idle",
+          "paused": "Paused (hot water)",
+          "waiting": "Waiting",
+          "off": "Off",
+          "fault": "Fault",
+          "disabled": "Disabled",
+          "away": "Away",
+          "testing": "Heat test",
+          "starting": "Starting"
+        }
+      },
+      "need": {
+        "name": "Need",
+        "state": {
+          "safety": "Safety",
+          "comfort": "Comfort",
+          "baseline": "Baseline",
+          "none": "None"
+        }
+      },
+      "decision": {
+        "name": "Decision",
+        "state": {
+          "approved": "Approved",
+          "piggyback": "Piggyback",
+          "deferred": "Deferred",
+          "vetoed": "Vetoed",
+          "idle": "Idle",
+          "fault": "Fault"
+        }
+      },
+      "house_temperature": {
+        "name": "House temperature"
+      },
+      "outdoor_day_mean": {
+        "name": "Outdoor day mean"
+      },
+      "forecast_min_24h": {
+        "name": "Forecast minimum 24h"
+      },
+      "calibration": {
+        "name": "Calibration"
+      },
+      "house_heat_loss_tau": {
+        "name": "House heat-loss time constant"
+      },
+      "gas_today": {
+        "name": "Gas today"
+      },
+      "gas_cost_today": {
+        "name": "Gas cost today"
+      },
+      "boiler_runtime_today": {
+        "name": "Boiler runtime today"
+      },
+      "boiler_burns_today": {
+        "name": "Boiler burns today"
+      },
+      "gas_per_degree_day": {
+        "name": "Gas per degree-day"
+      },
+      "heat_loss_tau": {
+        "name": "Heat-loss time constant"
+      },
+      "warm_up_rate": {
+        "name": "Warm-up rate"
+      },
+      "predicted_2h": {
+        "name": "Predicted in 2h"
+      },
+      "decision_log": {
+        "name": "Decision log"
+      },
+      "house_heat_retention": {
+        "name": "House heat retention"
+      },
+      "heat_retention": {
+        "name": "Heat retention"
+      },
+      "electric_today": {
+        "name": "Electricity today"
+      },
+      "electric_cost_today": {
+        "name": "Electricity cost today"
+      },
+      "energy_today": {
+        "name": "Energy today"
+      },
+      "heater_power": {
+        "name": "Heater power"
+      }
+    },
+    "binary_sensor": {
+      "boiler_demand": {
+        "name": "Boiler demand"
+      },
+      "occupied": {
+        "name": "Occupied"
+      },
+      "calibrated": {
+        "name": "Calibrated"
+      }
+    },
+    "select": {
+      "mode": {
+        "name": "Mode",
+        "state": {
+          "off": "Off",
+          "one_cycle": "One Cycle",
+          "continuous": "Continuous"
+        }
+      },
+      "override": {
+        "name": "Override",
+        "state": {
+          "auto": "Auto",
+          "heat": "Heat now",
+          "off": "Off"
+        }
+      }
+    },
+    "switch": {
+      "enabled": {
+        "name": "Controller enabled"
+      },
+      "monitor_only": {
+        "name": "Monitor only"
+      }
+    },
+    "number": {
+      "house_target": {
+        "name": "House target"
+      },
+      "target": {
+        "name": "Target"
+      }
+    }
+  },
+  "services": {
+    "heat_test": {
+      "name": "Heat test",
+      "description": "Speeds up calibration: opens every radiator and runs the boiler for about 2 h, then lets the house cool. Pause your own heating schedule first.",
+      "fields": {
+        "start": {
+          "name": "Start",
+          "description": "On starts the test, off stops it early."
+        },
+        "ignore_automations": {
+          "name": "Ignore other automations",
+          "description": "Run even if other enabled automations use the boiler control."
+        }
+      }
+    },
+    "start_control": {
+      "name": "Start control",
+      "description": "Turns Monitor only off so Smart Heating drives the boiler and TRVs.",
+      "fields": {
+        "skip_calibration": {
+          "name": "Skip calibration",
+          "description": "Start before calibration ends, with default settings. Learning continues in the background."
+        }
+      }
+    }
+  }
+}

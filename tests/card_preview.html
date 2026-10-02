@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<style>
+  body { margin: 0; padding: 24px; font-family: Roboto, "Segoe UI", sans-serif; background: var(--bg); display: grid; gap: 24px; grid-template-columns: 400px 400px; align-items: start; }
+  .light { --bg:#f5f5f5; --primary-text-color:#212121; --secondary-text-color:#727272; --card-background-color:#fff; --divider-color:rgba(0,0,0,.12); --primary-color:#03a9f4; }
+  .dark  { --primary-text-color:#e1e1e1; --secondary-text-color:#9b9b9b; --card-background-color:#1c1c1c; --divider-color:rgba(225,225,225,.12); --primary-color:#03a9f4; background:#111; padding: 16px; }
+  ha-card { display:block; background: var(--card-background-color); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+</style></head>
+<body class="light">
+<div id="a"></div>
+<div class="dark"><div id="b"></div></div>
+<script>customElements.define('ha-card', class extends HTMLElement {});
+customElements.define('ha-icon', class extends HTMLElement { connectedCallback() { this.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M7.95 3L6.53 5.19L7.95 7.4H7.94L5.95 10.5L4.22 9.6L5.64 7.39L4.22 5.19L6.22 2.09L7.95 3M13.95 2.89L12.53 5.1L13.95 7.3L13.94 7.31L11.95 10.4L10.22 9.5L11.64 7.3L10.22 5.1L12.22 2L13.95 2.89M20 2.89L18.56 5.1L20 7.3V7.31L18 10.4L16.25 9.5L17.67 7.3L16.25 5.1L18.25 2L20 2.89M2 22V14A2 2 0 0 1 4 12H20A2 2 0 0 1 22 14V22H20V20H4V22H2M6 14A1 1 0 0 0 5 15V17A1 1 0 0 0 6 18A1 1 0 0 0 7 17V15A1 1 0 0 0 6 14M10 14A1 1 0 0 0 9 15V17A1 1 0 0 0 10 18A1 1 0 0 0 11 17V15A1 1 0 0 0 10 14M14 14A1 1 0 0 0 13 15V17A1 1 0 0 0 14 18A1 1 0 0 0 15 17V15A1 1 0 0 0 14 14M18 14A1 1 0 0 0 17 15V17A1 1 0 0 0 18 18A1 1 0 0 0 19 17V15A1 1 0 0 0 18 14Z"/></svg>'; this.style.display = 'inline-flex'; } });</script>
+<script src="../custom_components/smart_heating/frontend/smart-heating-card.js"></script>
+<script>
+const rooms = [
+  ["master","Master bedroom",2,"a",19.1,18.5,"deferred","heat rising from below",0.4,false,true],
+  ["girls","Girls bedroom",2,"a",18.8,18.5,"idle","at target (scheduled)",0.1,false,true],
+  ["ben","Ben bedroom",2,"a",19.4,null,"idle","at target (baseline)",0,false,true],
+  ["ensuite","Ensuite",2,"a",18.2,null,"idle","at target (baseline)",-0.1,false,true],
+  ["kids","Kids bathroom",2,"a",18.9,null,"idle","at target (baseline)",0,false,true],
+  ["landing2","Landing",2,"c",20.3,null,"idle","at target (baseline)",0,false,false],
+  ["living","Living room",1,"a",18.2,19,"approved","occupied",0.9,true,true],
+  ["kitchen","Kitchen",1,"a",18.8,19,"piggyback","topping up while boiler runs",0.6,true,true],
+  ["landing1","Landing",1,"c",19.6,null,"idle","at target (baseline)",0.3,false,false],
+  ["office","Office",0,"b",17.6,null,"idle","at target (baseline)",-0.1,false,true],
+  ["play","Play room",0,"b",17.9,18,"approved","manual heat",1.2,true,true],
+  ["hall","Hall",0,"c",18.0,null,"idle","at target (baseline)",0.2,false,false],
+  ["bath0","Downstairs bathroom",0,"c",null,null,"fault","sensor unavailable",null,false,false],
+];
+const states = {}, entities = {}, devices = {};
+for (const [id,name,floor,prio,temp,target,verdict,reason,trend,occ,trv] of rooms) {
+  devices[id] = { name };
+  states[`sensor.${id}_need`] = { entity_id:`sensor.${id}_need`, state:"comfort", attributes:{ floor, priority:prio, temperature: temp, target, deficit:0, comfort:19, trend, occupied:occ, has_trv:trv, override: id==="play"?"heat":"auto", override_until: id==="play"?"2026-10-02T15:30:00Z":null, reason, has_heater: id==="kitchen", heater_on: id==="kitchen" }};
+  if (id==="kitchen") { states["sensor.kitchen_energy"] = { entity_id:"sensor.kitchen_energy", state:"1.42", attributes:{ kind:"room_energy", power_now_w: 1800, cost_today: 0.36 }}; entities["sensor.kitchen_energy"] = { platform:"smart_heating", device_id:id }; }
+  states[`sensor.${id}_decision`] = { entity_id:`sensor.${id}_decision`, state:verdict, attributes:{ reason, valve_command:null }};
+  states[`select.${id}_override`] = { entity_id:`select.${id}_override`, state: id==="office"?"off":(id==="play"?"heat":"auto"), attributes:{ options:["auto","heat","off"] }};
+  states[`sensor.${id}_tau`] = { entity_id:`sensor.${id}_tau`, state: id==="living" ? "61" : "84", attributes:{ kind:"heat_loss_tau", calibration: 100, free_heat_gain: 5.2 }};
+  states[`sensor.${id}_warm`] = { entity_id:`sensor.${id}_warm`, state:"1.3", attributes:{ kind:"warm_up_rate" }};
+  states[`sensor.${id}_pred`] = { entity_id:`sensor.${id}_pred`, state: temp==null?"unknown":String((temp-0.3).toFixed(2)), attributes:{ kind:"predicted_2h", predicted_8h: temp==null?null:temp-0.9, hours_to_baseline: 11.5 }};
+  states[`number.${id}_target`] = { entity_id:`number.${id}_target`, state: String(prio==="c"?17:prio==="b"?18:(id.includes("bed")||id==="master"||id==="girls"?18.5:19)), attributes:{ kind:"room_target", vs_house: prio==="c"?-2:prio==="b"?-1:0 }};
+  entities[`number.${id}_target`] = { platform:"smart_heating", device_id:id };
+  states[`sensor.${id}_ret`] = { entity_id:`sensor.${id}_ret`, state: id==="living" ? "65" : "71", attributes:{ kind:"heat_retention", grade: id==="living" ? "C" : "B", rating: id==="living" ? "good" : "very good" }};
+  for (const e of [`sensor.${id}_need`,`sensor.${id}_decision`,`select.${id}_override`,`sensor.${id}_tau`,`sensor.${id}_warm`,`sensor.${id}_pred`,`sensor.${id}_ret`]) entities[e] = { platform:"smart_heating", device_id:id };
+}
+states["sensor.smart_heating_status"] = { entity_id:"sensor.smart_heating_status", state:"heating", attributes:{ boiler_demand:true, reason:"2 room(s) approved", open_rooms:["Living room","Kitchen","Play room"] }};
+states["select.smart_heating_mode"] = { entity_id:"select.smart_heating_mode", state:"continuous", attributes:{ options:["off","one_cycle","continuous"] }};
+states["switch.smart_heating_monitor_only"] = { entity_id:"switch.smart_heating_monitor_only", state:"on", attributes:{} };
+const logEntries = [
+  {time:"2026-11-10T18:02:00Z", room:"Play room", message:"approved (manual heat) 17.9° to 18.0° valve opening"},
+  {time:"2026-11-10T18:02:00Z", room:null, message:"Boiler on: 2 room(s) approved"},
+  {time:"2026-11-10T17:58:00Z", room:"Master bedroom", message:"deferred (heat rising from below) 19.1° to 18.5°"},
+  {time:"2026-11-10T17:41:00Z", room:"Office", message:"Override off for 2 h"},
+  {time:"2026-11-10T17:20:00Z", room:"Living room", message:"approved (occupied) 18.2° to 19.0° valve opening"}];
+states["sensor.hret"]={entity_id:"sensor.hret",state:"71",attributes:{kind:"heat_retention",scope:"house",grade:"B"}}; entities["sensor.hret"]={platform:"smart_heating",device_id:"house"};
+states["sensor.log"]={entity_id:"sensor.log",state:"x",attributes:{kind:"decision_log",entries:logEntries}}; entities["sensor.log"]={platform:"smart_heating",device_id:"house"};
+const extra = {"sensor.house_t":{kind:"house_temperature"},"sensor.out":{kind:"outdoor_day_mean"},"sensor.f0":{kind:"floor_temperature",floor:0},"sensor.f1":{kind:"floor_temperature",floor:1},"sensor.f2":{kind:"floor_temperature",floor:2},"sensor.cal":{kind:"calibration",calibrated:false,available:true,learning_now:"collecting cooling data",can_heat_test:true,rooms_done:3,rooms_needed:11,cooling_hours:9.5,cooling_hours_needed:24,variety_c:1.2,variety_needed_c:2,heating_hours:0.5,heating_hours_needed:2,heating_hours_left:1.5,variety_left_c:0.8,eta_hours:21,heat_test_min_left:null},"number.house":{kind:"house_target",baseline_day:17,baseline_night:15,safety:12},"sensor.gas":{kind:"gas_today",measured:true},"sensor.cost":{kind:"gas_cost_today"},"sensor.elec":{kind:"electric_today",measured:true,projected_today_kwh:3.1},"sensor.elecc":{kind:"electric_cost_today"}};
+const vals = {"sensor.house_t":"18.7","sensor.out":"8.4","sensor.f0":"17.8","sensor.f1":"18.9","sensor.f2":"19.1","sensor.cal":"64","number.house":"19","sensor.gas":"16.8","sensor.cost":"1.31","sensor.elec":"1.4","sensor.elecc":"0.36"};
+for (const [e,a] of Object.entries(extra)) { states[e]={entity_id:e,state:vals[e],attributes:a}; entities[e]={platform:"smart_heating",device_id:"house"}; }
+for (const e of ["sensor.smart_heating_status","select.smart_heating_mode","switch.smart_heating_monitor_only"]) entities[e] = { platform:"smart_heating", device_id:"house" };
+const hass = { states, entities, devices, callService: (...a) => console.log(a) };
+function mk(target, opts) {
+  const h = JSON.parse(JSON.stringify(hass)); h.callService = () => Promise.resolve();
+  if (opts.calibrated) h.states["sensor.cal"].attributes.calibrated = true;
+  if (opts.st) Object.assign(h.states["sensor.smart_heating_status"].attributes, opts.st);
+  if (opts.control) h.states["switch.smart_heating_monitor_only"].state = "off";
+  if (opts.oneFloor) for (const [e, st] of Object.entries(h.states)) { if (st.attributes.floor != null && st.attributes.floor !== 1) { delete h.states[e]; delete h.entities[e]; } }
+  if (opts.test != null) h.states["sensor.cal"].attributes.heat_test_min_left = opts.test;
+  if (opts.temp) h.states["sensor.house_t"].state = opts.temp;
+  if (opts.mode) h.states["select.smart_heating_mode"].state = opts.mode;
+  const c = document.createElement("smart-heating-card"); c.setConfig(opts.cfg || {}); c._expanded = !!opts.expanded; c._open = opts.open || null; c._calOpen = !!opts.cal; c._tip = opts.tip || null; c.hass = h;
+  const wrap = document.createElement("div"); wrap.style.marginBottom = "16px"; wrap.appendChild(c);
+  document.getElementById(target).appendChild(wrap);
+}
+mk("a", {temp: "20.1", test: 123, st: {boiler_demand: true, has_boiler: true, boiler_firing: true, hot_water: true}});
+mk("a", {temp: "18.2", cfg: {title: "Heating", icon: "mdi:radiator"}, calibrated: true, control: true, st: {boiler_demand: true, has_boiler: true, boiler_firing: true, hot_water: true, night: true}});
+mk("a", {temp: "19.4", calibrated: true, control: true, oneFloor: true, mode: "off", st: {status: "off", away: true, open_rooms: []}});
+mk("b", {temp: "18.7", expanded: true, open: "Kitchen", calibrated: true});
+</script>
+</body></html>
