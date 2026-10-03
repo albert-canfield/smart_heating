@@ -63,6 +63,7 @@ const LOGO = '<svg viewBox="0 0 256 256" aria-hidden="true"><rect width="256" he
 const CHEV = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5l6 6 6-6"/></svg>';
 const SPIN = '<svg class="spin" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" class="trk"/><path d="M12 3a9 9 0 0 1 9 9" class="arc"/></svg>';
 
+const ICON_PERSON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="3.6"/><path d="M4.8 20.5c0-4 3.2-7 7.2-7s7.2 3 7.2 7z"/></svg>';
 const ICON_BOLT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4.5 13.5H11L10 22l8.5-11.5H12z"/></svg>';
 const ICON_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
 const ICON_FLAME = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.2 1.2-3.6 2.4-4.6.2 1.6 1 2.6 2.1 3C11 8.8 11.4 5.6 12 3z"/></svg>';
@@ -677,7 +678,7 @@ class SmartHeatingCard extends HTMLElement {
       <button class="chip v-${state} ${r.hasTrv || r.hasHeater ? "" : "dumb"}" data-room="${esc(r.name)}"
         aria-expanded="${this._open === r.name}" aria-label="${esc(r.name)}, ${r.temp == null ? "no reading" : r.temp.toFixed(1) + " degrees"}, ${esc(label)}"
         title="${esc(r.name)}: ${esc(r.reason)}">
-        ${r.occupied ? `<span class="dot" aria-hidden="true"></span>` : ""}
+        ${r.occupied ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}
         ${r.heaterOn ? `<span class="bolt" aria-label="heater on">${ICON_BOLT}</span>` : ""}
         <span class="cname">${esc(r.name)}</span>
         <span class="ctemp">${r.temp == null ? "–" : r.temp.toFixed(1)}</span>
@@ -694,7 +695,7 @@ class SmartHeatingCard extends HTMLElement {
       <button class="room v-${state} ${r.hasTrv || r.hasHeater ? "" : "dumb"}" data-room="${esc(r.name)}"
         aria-expanded="${this._open === r.name}"
         title="${esc(r.reason)}">
-        <span class="name">${esc(r.name)}${r.occupied ? `<span class="dot" aria-label="occupied"></span>` : ""}</span>
+        <span class="name">${esc(r.name)}${r.occupied ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}</span>
         <span class="temp">${r.temp == null ? "–" : `${r.temp.toFixed(1)}°`}<small>${trend}</small></span>
         <span class="meta">${esc(label)}${r.target != null ? `<span class="target">to ${Number(r.target).toFixed(1)}°</span>` : ""}</span>
       </button>`;
@@ -844,7 +845,9 @@ const STYLE = `<style>
           padding: 8px 10px 8px 12px; border-radius: 6px; border-left: 3px solid transparent;
           background: color-mix(in srgb, var(--primary-text-color) 4%, transparent); min-height: 72px; }
   .room .name { font-size: .8125rem; color: var(--primary-text-color); display: flex; align-items: center; gap: 6px; }
-  .room .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--primary-color); }
+  .inuse { display: inline-flex; flex: none; width: 11px; height: 11px; color: var(--secondary-text-color); }
+  .inuse svg { width: 100%; height: 100%; fill: currentColor; }
+  .room .name .inuse { margin-left: 5px; vertical-align: -1px; }
   .room .temp { font-size: 1.375rem; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--primary-text-color); line-height: 1.15; }
   .room .temp small { font-size: .75rem; font-weight: 400; color: var(--sh-muted); }
   .room .meta { font-size: .75rem; color: var(--sh-muted); display: flex; flex-wrap: wrap; column-gap: 6px; }
@@ -899,7 +902,6 @@ const STYLE = `<style>
           background: color-mix(in srgb, var(--primary-text-color) 5%, transparent); border: 1px solid transparent; }
   .chip .cname { font-size: .8125rem; color: var(--sh-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 112px; }
   .chip .ctemp { font-size: .875rem; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
-  .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--primary-color); flex: none; }
   .chip.v-approved { background: var(--sh-heat-soft); border-color: var(--sh-heat); }
   .chip.v-approved .ctemp, .chip.v-approved .cname { color: var(--sh-heat); }
   .chip.v-piggyback { border-color: var(--sh-top); }

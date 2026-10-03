@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.10.3
+- Card: rooms in use show a small person icon (with an "In use" tooltip) instead of a blue dot, which was easy to confuse with the blue status dot for hot water priority.
+
 ## 0.10.2
 - Season gate is a bar, not a wall: on mild days a room in use heats when it is clearly cold (1.5° below target and not warming by itself, adjustable as Mild-day margin), empty rooms wait, and what you ask for always heats. Default gate 15.5° (the usual UK figure), with a 0.5° margin so it doesn't flip.
 - One Cycle heats the rooms in use and any Heat now rooms, even on mild days. With nothing to heat it waits 3 minutes and the card says why, with a countdown, Heat all rooms below target, and Off now.

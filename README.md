@@ -76,7 +76,7 @@ Smart Heating heats from day one with sensible defaults and learns your home in 
 
 # Documentation
 
-Version 0.10.2. How it starts:
+Version 0.10.3. How it starts:
 
 1. **Heating from day one** (or **Watching** if you picked *Watch first*: it decides and logs, never touches the boiler or TRVs, until you tap **Start heating** and confirm).
 2. **Learning in the background**: each room's heat-loss time constant, free-heat gain and warm-up rate, from normal life. Heating decisions don't wait for it.
@@ -263,7 +263,7 @@ layout: compact        # compact (default): summary, tap to expand; full: large 
 
 All options are also in the card's visual editor. The title and icon share the top line with the status, so they cost no extra space.
 
-Compact shows house temperature (always the house average), status with small indicators (flame = boiler burning, outline flame = boiler called, radiator = rooms heating, bolt = electric heaters on, drop = hot water heating, moon = night, crossed house = away, eye = watching only), floor averages (only when rooms span more than one floor) and the mode buttons (Off grey, One cycle amber, Continuous orange when selected); the background tint follows the house temperature (blue when cold, through green and yellow, to orange when warm). Tap it to expand rooms, gas, cost and the log. Tap a room for its details (need, target, trend; predictions, insulation and warm-up appear once learned) and Heat now / Turn off / Back to auto. **Show log** lists recent decisions.
+Compact shows house temperature (always the house average), status with small indicators (flame = boiler burning, outline flame = boiler called, radiator = rooms heating, bolt = electric heaters on, drop = hot water heating, moon = night, crossed house = away, eye = watching only), floor averages (only when rooms span more than one floor) and the mode buttons (Off grey, One cycle amber, Continuous orange when selected); the background tint follows the house temperature (blue when cold, through green and yellow, to orange when warm). Tap it to expand rooms, gas, cost and the log. A small person icon marks rooms in use (presence, media, or a light at night). Tap a room for its details (need, target, trend; predictions, insulation and warm-up appear once learned) and Heat now / Turn off / Back to auto. **Show log** lists recent decisions.
 
 ## Logs and diagnostics
 
