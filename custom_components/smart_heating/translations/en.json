@@ -167,7 +167,7 @@
           "night_start": "Night starts",
           "night_end": "Night ends",
           "safety": "Safety floor (frost/damp, always on)",
-          "season_gate": "Season gate (outdoor mean)",
+          "season_gate": "Season gate (outdoor day mean)",
           "override_hours": "Room override duration"
         },
         "data_description": {
@@ -176,7 +176,7 @@
           "night_start": "Night settings begin.",
           "night_end": "Day settings resume.",
           "safety": "Frost and damp floor. Always on, even when Off or away.",
-          "season_gate": "Outdoor day mean above this = no comfort heating.",
+          "season_gate": "Automatic heating runs on days when the outdoor average (last 12 h and next 12 h) is below this. UK homes usually need heat below 15.5°. On milder days only rooms in use that are clearly cold heat, and One Cycle and Heat now always work.",
           "override_hours": "How long Heat now / Turn off lasts."
         }
       },
@@ -206,7 +206,8 @@
           "trv_open_offset": "TRV open offset",
           "trv_closed": "TRV closed setpoint",
           "hw_max_pause_min": "Hot water max pause",
-          "notify_service": "Notify service (e.g. notify.mobile_app_phone)"
+          "notify_service": "Notify service (e.g. notify.mobile_app_phone)",
+          "mild_margin": "Mild-day margin"
         },
         "data_description": {
           "hysteresis": "Heat starts this far below target. Bigger = fewer burns.",
@@ -218,7 +219,8 @@
           "trv_open_offset": "Open TRV = target plus this. Caps the room if HA stops.",
           "trv_closed": "Closed TRV setpoint.",
           "hw_max_pause_min": "Longest heating pauses for hot water.",
-          "notify_service": "Phone notification when learning finishes, e.g. notify.mobile_app_phone."
+          "notify_service": "Phone notification when learning finishes, e.g. notify.mobile_app_phone.",
+          "mild_margin": "On days above the season gate, a room in use heats by itself only when it is this far below its target and not warming on its own."
         }
       }
     },
@@ -549,6 +551,16 @@
         "rooms": {
           "name": "Rooms",
           "description": "Room names, as shown on the card."
+        }
+      }
+    },
+    "one_cycle": {
+      "name": "One Cycle",
+      "description": "Heats what needs it once, then switches to Off. With nothing to heat it waits 3 minutes, then Off.",
+      "fields": {
+        "all_rooms": {
+          "name": "Every room below target",
+          "description": "Also heat empty rooms, from any shortfall, even on mild days."
         }
       }
     }

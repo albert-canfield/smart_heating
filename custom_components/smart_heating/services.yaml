@@ -8,6 +8,12 @@ heat_test:
       default: false
       selector:
         boolean:
+one_cycle:
+  fields:
+    all_rooms:
+      default: false
+      selector:
+        boolean:
 start_control:
 relearn:
   fields:

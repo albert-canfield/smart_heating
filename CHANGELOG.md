@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.2
+- Season gate is a bar, not a wall: on mild days a room in use heats when it is clearly cold (1.5° below target and not warming by itself, adjustable as Mild-day margin), empty rooms wait, and what you ask for always heats. Default gate 15.5° (the usual UK figure), with a 0.5° margin so it doesn't flip.
+- One Cycle heats the rooms in use and any Heat now rooms, even on mild days. With nothing to heat it waits 3 minutes and the card says why, with a countdown, Heat all rooms below target, and Off now.
+- Heat now heats from any shortfall, skips coasting and batching, works while away, and while Off starts One Cycle, which ends when the room reaches its target.
+- Off cancels everything: One Cycle, Heat now in every room, a running heat test, and the boiler at once.
+- A room in use whose comfort equals the baseline is now treated as in use, not empty.
+- A new setup no longer restores Watch or Mode states left by an earlier setup with the same entity ids.
+
 ## 0.10.1
 - No outdoor sensor needed: without one, the weather entity's current temperature is used.
 - A failed or empty forecast fetch is retried after 5 minutes instead of 30 (for example while the weather entity is still starting), and no longer clears the forecast already held.

@@ -94,8 +94,57 @@ def test_occupied_cold_room_fires_boiler_and_opens_valve():
 
 
 def test_warm_season_vetoes_comfort():
-    p = make_plan([(LIVING, RoomSnapshot(temp=18.0, occupied=True))], house(outdoor_mean=15.0), S)
+    p = make_plan([(LIVING, RoomSnapshot(temp=18.0, occupied=True))], house(outdoor_mean=17.0), S)
     assert not p.boiler_on and p.rooms["living"].verdict is Verdict.VETOED
+
+
+def test_season_gate_has_a_margin():
+    from core import season_is_off
+    assert season_is_off(None, 15.5, 15.5) and not season_is_off(False, 15.4, 15.5)
+    assert season_is_off(True, 15.2, 15.5)  # once mild, stays mild just under the gate
+    assert not season_is_off(True, 14.9, 15.5) and not season_is_off(True, None, 15.5)
+
+
+def _mild(cfg, snap, **kw):
+    return make_plan([(cfg, snap)], house(**{"outdoor_mean": 17.0, **kw}), S).rooms[cfg.room_id]
+
+
+def test_mild_day_continuous_heats_only_a_cold_room_in_use():
+    assert _mild(LIVING, RoomSnapshot(temp=18.0, occupied=True)).verdict is Verdict.VETOED  # 1 below: not cold enough
+    d = _mild(LIVING, RoomSnapshot(temp=17.4, occupied=True))  # 1.6 below and not warming
+    assert d.verdict is Verdict.APPROVED and "cold room" in d.reason
+    assert _mild(LIVING, RoomSnapshot(temp=17.4, occupied=True, trend=0.5)).verdict is Verdict.VETOED  # warming by itself
+    d = _mild(LIVING, RoomSnapshot(temp=15.0))  # empty: baseline only
+    assert d.verdict is Verdict.VETOED and d.reason.endswith("empty room")
+
+
+def test_mild_day_what_you_ask_for_heats():
+    d = _mild(LIVING, RoomSnapshot(temp=18.8, override=Override.HEAT))  # Heat now: from any shortfall
+    assert d.verdict is Verdict.APPROVED and d.need.level is Level.MANUAL
+    assert _mild(LIVING, RoomSnapshot(temp=18.4, occupied=True), mode=Mode.ONE_CYCLE).verdict is Verdict.APPROVED
+    assert _mild(LIVING, RoomSnapshot(temp=15.0), mode=Mode.ONE_CYCLE).verdict is Verdict.VETOED  # empty room waits
+    d = _mild(LIVING, RoomSnapshot(temp=16.9), mode=Mode.ONE_CYCLE, one_cycle_all=True)  # every room, any shortfall
+    assert d.verdict is Verdict.APPROVED
+
+
+def test_tie_is_named_after_the_room_in_use():
+    study = RoomConfig("study", "Study", 0, Priority.B, 17.0)  # comfort equals the day baseline
+    assert evaluate_need(study, RoomSnapshot(temp=16.0, occupied=True), house(), S).level is Level.COMFORT
+
+
+def test_away_stops_automatic_heating_but_not_heat_now():
+    p = make_plan([(LIVING, RoomSnapshot(temp=17.0, occupied=True))], house(away=True), S)
+    assert not p.boiler_on and p.status == "off" and p.reason == "away"
+    p = make_plan([(LIVING, RoomSnapshot(temp=17.0, override=Override.HEAT))], house(away=True), S)
+    assert p.boiler_on and p.rooms["living"].need.level is Level.MANUAL
+
+
+def test_heat_now_skips_coasting_and_batching_one_cycle_skips_batching():
+    util = RoomConfig("util", "Utility", 0, Priority.C, 17.0)
+    d = make_plan([(util, RoomSnapshot(temp=16.7, trend=1.0, override=Override.HEAT))], house(), S).rooms["util"]
+    assert d.verdict is Verdict.APPROVED
+    assert not make_plan([(util, RoomSnapshot(temp=16.3))], house(), S).boiler_on  # batched normally
+    assert make_plan([(util, RoomSnapshot(temp=16.3))], house(mode=Mode.ONE_CYCLE), S).boiler_on
 
 
 def test_season_never_vetoes_safety():

@@ -402,7 +402,7 @@ class SmartHeatingOptionsFlow(OptionsFlow):
             vol.Required(OPT_NIGHT_START, default=self._v(OPT_NIGHT_START, DEFAULT_NIGHT_START)): sel.TimeSelector(),
             vol.Required(OPT_NIGHT_END, default=self._v(OPT_NIGHT_END, DEFAULT_NIGHT_END)): sel.TimeSelector(),
             vol.Required("safety", default=self._v("safety", d.safety)): _num(5, 15, 0.5, "°C"),
-            vol.Required("season_gate", default=self._v("season_gate", d.season_gate)): _num(5, 20, 0.5, "°C"),
+            vol.Required("season_gate", default=self._v("season_gate", d.season_gate)): _num(5, 25, 0.5, "°C"),
             vol.Required(OPT_OVERRIDE_HOURS, default=self._v(OPT_OVERRIDE_HOURS, DEFAULT_OVERRIDE_HOURS)): _num(0.5, 12, 0.5, "h"),
         })
         return self.async_show_form(step_id="temperatures", data_schema=schema)
@@ -458,6 +458,7 @@ class SmartHeatingOptionsFlow(OptionsFlow):
             vol.Required("coast_rate", default=v("coast_rate", d.coast_rate)): _num(0.1, 3, 0.1, "°C/h"),
             vol.Required("coast_horizon_min", default=v("coast_horizon_min", d.coast_horizon_min)): _num(0, 240, 5, "min"),
             vol.Required("stack_max_wait_min", default=v("stack_max_wait_min", d.stack_max_wait_min)): _num(0, 120, 5, "min"),
+            vol.Required("mild_margin", default=v("mild_margin", d.mild_margin)): _num(0.5, 5, 0.5, "°C"),
         }
         if self._type != TYPE_ELECTRIC:
             fields[vol.Required("min_run_min", default=v("min_run_min", d.min_run_min))] = _num(0, 60, 1, "min")

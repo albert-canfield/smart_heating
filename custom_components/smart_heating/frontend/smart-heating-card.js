@@ -24,8 +24,8 @@ const FLOOR_NAME = { 0: "Ground", 1: "1st", 2: "2nd", 3: "3rd" };
 const MODE_LABEL = { off: "Off", one_cycle: "One cycle", continuous: "Continuous" };
 
 const MODE_TIP = {
-  off: "Frost protection only",
-  one_cycle: "Heats the rooms that need it once, then switches itself off",
+  off: "Stops everything: One Cycle, Heat now and the boiler. Frost protection stays on",
+  one_cycle: "Heats the rooms in use, or ones you pick, once, then switches itself off",
   continuous: "Keeps every room at its target, firing the boiler only when it's worth it",
 };
 
@@ -96,6 +96,11 @@ const STATUS_SENTENCE = {
 };
 
 class SmartHeatingCard extends HTMLElement {
+  disconnectedCallback() {
+    clearInterval(this._ocTimer);
+    clearTimeout(this._confirmTimer);
+  }
+
   setConfig(config) {
     this._config = config || {};
     this._open = null;
@@ -248,6 +253,7 @@ class SmartHeatingCard extends HTMLElement {
       calling: new Set([...(house.status?.attributes.open_rooms || []), ...(house.status?.attributes.heater_rooms || [])]).size,
       monitor: house.monitor?.state === "on",
       mode: house.mode?.state,
+      oneCycleWait: house.status?.attributes.one_cycle_wait || null,
       modeEntity: house.mode?.entity_id,
       houseTemp: num(house.temp?.state),
       calibrated: house.cal ? house.cal.attributes.calibrated === true : true,
@@ -376,6 +382,18 @@ class SmartHeatingCard extends HTMLElement {
       <button class="primary" data-start>Start heating</button></div>`;
   }
 
+  _oneCycleBox(d) {
+    const w = d.oneCycleWait;
+    if (!w || d.mode !== "one_cycle") return "";
+    return `<div class="ocbox" role="status">
+      <p><b>One Cycle: nothing needs heat yet</b></p>
+      <ul>${(w.reasons || []).map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
+      <p class="muted">Switches to Off in <b data-countdown="${esc(w.until)}">${fmtLeft(w.until)}</b> unless something changes. Heat now on a room starts it straight away.</p>
+      <div class="actions">${w.all_rooms ? "" : `<button class="primary" data-oc="all">${ICON_FLAME}Heat all rooms below target</button>`}
+        <button data-oc="off">Off now</button></div>
+    </div>`;
+  }
+
   _calPanel(d) {
     if (!(this._calOpen || d.heatTest != null) || (d.calibrated && d.heatTest == null)) return "";
     const c = d.cal;
@@ -455,6 +473,7 @@ class SmartHeatingCard extends HTMLElement {
         </header>
         ${this._calPanel(d)}
         ${this._ready(d)}
+        ${this._oneCycleBox(d)}
         ${this._error ? `<p class="err" role="alert">${esc(this._error)}</p>` : ""}
         ${modeBar(d.mode)}
         ${this._houseStepper(d)}
@@ -528,6 +547,7 @@ class SmartHeatingCard extends HTMLElement {
         </div>
         ${this._calPanel(d)}
         ${this._ready(d)}
+        ${this._oneCycleBox(d)}
         ${this._error ? `<p class="err" role="alert">${esc(this._error)}</p>` : ""}
         <div class="row2">
           ${floorPills}
@@ -600,6 +620,14 @@ class SmartHeatingCard extends HTMLElement {
       this._render();
     }));
     root.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => this._setMode(b.dataset.mode)));
+    root.querySelectorAll("[data-oc]").forEach((b) => b.addEventListener("click", () => {
+      this._error = null;
+      if (b.dataset.oc === "all") this._call("smart_heating", "one_cycle", { all_rooms: true });
+      else this._setMode("off");
+    }));
+    clearInterval(this._ocTimer);
+    const cd = root.querySelector("[data-countdown]");
+    if (cd) this._ocTimer = setInterval(() => { cd.textContent = fmtLeft(cd.dataset.countdown); }, 1000);
     root.querySelectorAll("[data-more]").forEach((el) => {
       const open = (e) => {
         e.stopPropagation();
@@ -765,6 +793,12 @@ function num(v) {
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Time left until an ISO moment, as m:ss.
+function fmtLeft(until) {
+  const s = Math.max(0, Math.round((new Date(until).getTime() - Date.now()) / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
 // Attributes that make a footer figure open its sensor's more-info dialog (history graph).
@@ -1045,6 +1079,18 @@ const STYLE = `<style>
            border-radius: 10px; font-size: .8125rem; color: var(--primary-text-color);
            background: color-mix(in srgb, #2e8b57 14%, var(--card-background-color, #fff)); }
   .ready span { display: flex; align-items: center; gap: 6px; }
+  .ocbox { margin-top: 10px; padding: 10px 12px; border-radius: 10px; font-size: .8125rem; color: var(--primary-text-color);
+           background: color-mix(in srgb, #3d8bff 12%, var(--card-background-color, #fff)); }
+  .ocbox p { margin: 0 0 6px; }
+  .ocbox ul { margin: 0 0 8px; padding-left: 18px; }
+  .ocbox li { margin: 2px 0; }
+  .ocbox .muted { color: var(--sh-muted); }
+  .ocbox .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ocbox button { all: unset; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px;
+                  border-radius: 999px; border: 1px solid var(--divider-color, rgba(0,0,0,.15)); font-size: .8125rem; }
+  .ocbox button.primary { background: var(--sh-heat); color: #fff; border-color: transparent; font-weight: 500; }
+  .ocbox button svg { width: 16px; height: 16px; fill: currentColor; }
+  .ocbox button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
   .ready.confirm { flex-wrap: wrap; background: color-mix(in srgb, #e0a020 18%, var(--card-background-color, #fff)); }
   .ready.confirm > span:first-child { display: block; flex: 1 1 220px; }
   .ready .actions { gap: 8px; }

@@ -76,7 +76,7 @@ Smart Heating heats from day one with sensible defaults and learns your home in 
 
 # Documentation
 
-Version 0.10.1. How it starts:
+Version 0.10.2. How it starts:
 
 1. **Heating from day one** (or **Watching** if you picked *Watch first*: it decides and logs, never touches the boiler or TRVs, until you tap **Start heating** and confirm).
 2. **Learning in the background**: each room's heat-loss time constant, free-heat gain and warm-up rate, from normal life. Heating decisions don't wait for it.
@@ -93,6 +93,26 @@ Version 0.10.1. How it starts:
 | A room learned something wrong? | Configure, **Relearn Rooms**: pick the rooms and confirm. For example after a valve was shut during the heat test, or after new windows. |
 
 Only real radiator heat counts: burns for hot water only (cylinder with the heating valve shut, or a combi running a tap) are treated as cooling time. Progress is saved, so restarts don't lose it.
+
+### Modes, Heat now and mild days
+
+| | What it does |
+|---|---|
+| **Off** | Stops everything: One Cycle, Heat now in every room, a running heat test, and the boiler at once. Frost protection stays on. |
+| **One Cycle** | Heats the rooms in use (and any you pick with Heat now) to their targets once, then switches to Off. If nothing needs heat, the card shows why with a 3-minute countdown and offers **Heat all rooms below target** (empty rooms too, from any shortfall). |
+| **Continuous** | Keeps every room at its target, firing the boiler only when it's worth it. |
+| **Heat now** (a room) | Heats that room from any shortfall. While Off it starts One Cycle, which ends when the room reaches its target. Works on mild days and while away. |
+
+**Season gate** (outdoor day mean, last 12 h plus next 12 h; 15.5°C by default, the usual UK figure): below it is heating season and every room is heated normally. On milder days automatic heating needs strong evidence, while what you ask for always heats:
+
+| Request | Heating season | Mild day, Continuous | Mild day, One Cycle |
+|---|---|---|---|
+| Frost floor | heat | heat | heat |
+| Heat now | heat | heat | heat |
+| Room in use | heat (from 0.5° below) | only if cold: 1.5° below and not warming by itself | heat (from 0.5° below) |
+| Empty room | heat | wait | wait |
+
+Once mild, it stays mild until the mean drops 0.5° below the gate, so it doesn't flip back and forth. The log says which rule allowed or blocked each room.
 
 ### Setting temperatures
 
@@ -162,7 +182,7 @@ Everything can be changed later: **Reconfigure** repeats the wizard; **Configure
 
 **Night period**: while the night schedule is on, the baseline drops to the night value (15°C) and comfort heat only goes to rooms with lights on or a manual "Heat now". Bedroom evening pre-heat comes from each room's own comfort schedule.
 
-**Frost protection** is the safety floor (12°C default, adjustable down to 5°C). It is always on while Smart Heating is heating: in Off and while away it still fires the boiler if any room drops below it. There is deliberately no switch to disable it. In Watch mode Smart Heating switches nothing at all, so frost protection then relies on your existing heating.
+**Frost protection** is the safety floor (12°C default, adjustable down to 5°C). It is always on while Smart Heating is in control: in Off, on mild days and while away it still fires the boiler if any room drops below it. There is deliberately no switch to disable it. In Watch mode Smart Heating switches nothing at all, so frost protection then relies on your existing heating.
 
 **Rooms come from your Home Assistant areas.** A room is an area: its name and floor come from Settings → Areas & floors and stay in sync when you rename or move things. Floor order uses each floor's level, or the floor name ("Ground Floor", "1st Floor") when no level is set.
 
@@ -182,12 +202,13 @@ For each area it picks up: the area's own temperature and humidity sensors (Sett
 
 Room devices created by Smart Heating are placed in their area, so they appear on the area's page.
 
-**Configure** pages: *Temperatures & Night* (baseline day 17°C, night 15°C, night times, safety 12°C, season gate 14°C, override length), *Energy Prices* (gas unit price, boiler kW for estimates, electricity unit price), *Relearn Rooms* (clear what chosen rooms have learned, asked to confirm), *Advanced* (hysteresis, coasting, stack wait, boiler min run/off, TRV setpoints, hot water pause, notify service). Pages only show what your heating type uses.
+**Configure** pages: *Temperatures & Night* (baseline day 17°C, night 15°C, night times, safety 12°C, season gate 15.5°C, override length), *Energy Prices* (gas unit price, boiler kW for estimates, electricity unit price), *Relearn Rooms* (clear what chosen rooms have learned, asked to confirm), *Advanced* (hysteresis, coasting, stack wait, mild-day margin 1.5°C, boiler min run/off, TRV setpoints, hot water pause, notify service). Pages only show what your heating type uses.
 
 ## Entities
 
 House device:
 - `select.smart_heating_mode`: Off / One Cycle / Continuous
+- service `smart_heating.one_cycle` (`all_rooms: true` heats every room below its target)
 - `switch.smart_heating_controller_enabled`: kill switch (turns the boiler off)
 - `switch.smart_heating_monitor_only`: on = decide and log only
 - `number.smart_heating_house_target`: house target (shifts every room)

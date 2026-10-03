@@ -21,7 +21,8 @@ class _RestoredSwitch(HouseEntity, SwitchEntity, RestoreEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         last = await self.async_get_last_state()
-        if last and last.state in (STATE_ON, STATE_OFF):
+        # A new setup ignores what an earlier one with the same entity id left behind.
+        if last and last.state in (STATE_ON, STATE_OFF) and not self.coordinator.fresh:
             await self._set(last.state == STATE_ON, restoring=True)
 
     async def async_turn_on(self, **kwargs: Any) -> None:

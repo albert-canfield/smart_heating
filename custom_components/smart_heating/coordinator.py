@@ -16,7 +16,7 @@ from homeassistant.core import Event, EventStateChangedData, HomeAssistant, Stat
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -43,6 +43,8 @@ from .const import (
     START_WATCH,
     STARTUP_GRACE_MIN,
     BOILER_SILENT_MIN,
+    ONE_CYCLE_WAIT_MIN,
+    SEASON_GATE_BAND,
     CONF_AREA,
     CONF_ALARM,
     CONF_HW_PRIORITY,
@@ -105,6 +107,7 @@ from .const import (
 from . import areas as area_tools
 from .core import (
     EnergyDay,
+    season_is_off,
     HouseSnapshot,
     RoomModel,
     Phase,
@@ -296,7 +299,15 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self.learning_phase = "starting"
         self.setpoints = Setpoints.initial([r.cfg for r in self.rooms.values()])
         self.welcomed = False
+        self.fresh = False  # first start of this setup: nothing to restore
         self._silent_since: datetime | None = None
+        # One Cycle: when it started, whether it has heated, every room or only rooms in use.
+        self._one_cycle_since: datetime | None = None
+        self._one_cycle_heated = False
+        self._one_cycle_timer = None  # ends the wait on time, not at the next minute's refresh
+        self.one_cycle_all = False
+        self.one_cycle_wait: dict[str, Any] | None = None
+        self._season_off: bool | None = None
         self._setup_checked: datetime | None = None
         self.heat_test: dict[str, Any] | None = None
         # Boiler protection state.
@@ -464,6 +475,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
     async def _load(self) -> None:
         data = await self._store.async_load() or {}
+        self.fresh = not data
         for rid, d in data.get("rooms", {}).items():
             if rid in self.rooms:
                 try:
@@ -569,6 +581,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             self.hass.bus.async_listen(fr.EVENT_FLOOR_REGISTRY_UPDATED, _registry_changed),
         ]
         await self._load()
+        if self.fresh:  # saved at once, so only the very first start counts as fresh
+            await self._store.async_save(self._store_data())
         self._started_at = dt_util.utcnow()
         self._log(f"Started: {self.profile.replace('_', ' ')} profile, {len(self.rooms)} room(s)"
                   + ("" if self.learnable else ", calibration unavailable"))
@@ -592,6 +606,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         await self.async_config_entry_first_refresh()
 
     async def async_stop(self) -> None:
+        self._reset_one_cycle()
         if self._unsub:
             self._unsub()
             self._unsub = None
@@ -605,11 +620,59 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
     # ---------- user controls ----------
 
-    async def async_set_mode(self, mode: Mode) -> None:
-        if mode is not self.mode:
-            self._log(f"Mode set to {mode.value}")
+    async def async_set_mode(self, mode: Mode, all_rooms: bool = False, restoring: bool = False) -> None:
+        """Off always cancels: One Cycle, Heat now in every room, a heat test, and the boiler at once."""
+        now = dt_util.utcnow()
+        if restoring:
+            self.mode = mode
+            if mode is Mode.ONE_CYCLE:
+                self._one_cycle_since, self._one_cycle_heated = now, False
+            return
+        if mode is Mode.OFF:
+            await self._cancel_to_off("Off")
+            await self.async_request_refresh()
+            return
+        if mode is Mode.ONE_CYCLE:
+            if self.mode is Mode.ONE_CYCLE:
+                if all_rooms and not self.one_cycle_all:
+                    self._log("One Cycle: heating every room below its target")
+            else:
+                self._log("Mode set to one_cycle" + (", every room below its target" if all_rooms else ""))
+                self._one_cycle_since, self._one_cycle_heated = now, False
+            self.one_cycle_all = self.one_cycle_all or all_rooms
+        else:
+            if mode is not self.mode:
+                self._log(f"Mode set to {mode.value}")
+            self._reset_one_cycle()
         self.mode = mode
-        await self.async_request_refresh()
+        await self.async_refresh()  # at once, so the card shows what One Cycle will do
+
+    def _reset_one_cycle(self) -> None:
+        self._one_cycle_since, self._one_cycle_heated = None, False
+        self.one_cycle_all, self.one_cycle_wait = False, None
+        if self._one_cycle_timer:
+            self._one_cycle_timer()
+            self._one_cycle_timer = None
+
+    @callback
+    def _one_cycle_due(self, _now: datetime) -> None:
+        self._one_cycle_timer = None
+        self.hass.async_create_task(self.async_request_refresh())
+
+    async def _cancel_to_off(self, why: str) -> None:
+        """Back to Off: Heat now ends in every room, One Cycle and any heat test stop, the boiler goes off."""
+        manual = [r for r in self.rooms.values() if r.override is Override.HEAT]
+        for r in manual:
+            r.override, r.override_until = Override.AUTO, None
+        self._reset_one_cycle()
+        was = self.mode
+        self.mode = Mode.OFF
+        self._log(f"{why}: heating off" + (f", Heat now ended in {', '.join(r.cfg.name for r in manual)}" if manual else "")
+                  if was is not Mode.OFF or manual else "Mode set to off")
+        if self.heat_test:
+            await self._finish_heat_test("stopped: heating set to Off")
+        if self.boiler_control and self.enabled and not self.monitor_only:
+            await self._boiler(False, force=True)  # off is always allowed, even inside the guard time
 
     async def async_set_enabled(self, value: bool) -> None:
         self.enabled = value
@@ -956,6 +1019,10 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             None if value is Override.AUTO
             else dt_util.utcnow() + timedelta(hours=self.override_hours)
         )
+        if value is Override.HEAT and self.mode is Mode.OFF:
+            self._log("Heat now while Off: One Cycle started", room=room.cfg.name)
+            await self.async_set_mode(Mode.ONE_CYCLE)
+            return
         await self.async_request_refresh()
 
     # ---------- update ----------
@@ -991,13 +1058,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         # One Cycle ends itself once nothing calls or every caller is coasting.
         if self.away and plan.status == "off":
             plan.status, plan.reason = "away", self.away_reason or "away"
-        if self.mode is Mode.ONE_CYCLE and not self.away and not any(
-            d.verdict.value == "approved" for d in plan.rooms.values()
-        ):
-            _LOGGER.info("One Cycle complete, switching to Off")
-            self._log("One Cycle complete, mode set to off")
-            self.mode = Mode.OFF
-            plan.reason = "one cycle complete"
+        if self.mode is Mode.ONE_CYCLE:
+            self._one_cycle_step(now, plan)
 
         # Remember state for hysteresis and stack wait.
         for room in self.rooms.values():
@@ -1225,6 +1287,66 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                       else f"Home again: back to {self.mode.value}")
         self.away, self.away_reason = away, why
 
+    def _one_cycle_step(self, now: datetime, plan: Plan) -> None:
+        """One Cycle heats what needs it, then Off. With nothing to heat it waits a few minutes, saying why."""
+        if any(d.verdict.value == "approved" for d in plan.rooms.values()):
+            self._one_cycle_heated, self.one_cycle_wait = True, None
+            return
+        if self._one_cycle_heated:
+            self._end_one_cycle("rooms reached their targets", plan)
+            return
+        since = self._one_cycle_since = self._one_cycle_since or now
+        until = since + timedelta(minutes=ONE_CYCLE_WAIT_MIN)
+        reasons = self._why_nothing(plan)
+        if now >= until:
+            self._end_one_cycle("nothing needed heat" + (f" ({reasons[0]})" if reasons else ""), plan)
+            return
+        if self._one_cycle_timer is None:
+            self._one_cycle_timer = async_call_later(self.hass, (until - now).total_seconds() + 1, self._one_cycle_due)
+        if self.one_cycle_wait is None:
+            self._log("One Cycle: nothing needs heat yet" + (f" ({reasons[0]})" if reasons else "")
+                      + f". Off in {ONE_CYCLE_WAIT_MIN} min unless something changes")
+        self.one_cycle_wait = {"until": until.isoformat(), "reasons": reasons, "all_rooms": self.one_cycle_all}
+        plan.reason = "One Cycle: nothing needs heat yet"
+
+    def _end_one_cycle(self, why: str, plan: Plan) -> None:
+        manual = [r for r in self.rooms.values() if r.override is Override.HEAT]
+        for r in manual:
+            r.override, r.override_until = Override.AUTO, None
+        self._reset_one_cycle()
+        self.mode = Mode.OFF
+        self._log(f"One Cycle ended: {why}. Mode set to off")
+        plan.reason = f"One Cycle ended: {why}"
+
+    def _why_nothing(self, plan: Plan) -> list[str]:
+        """Plain reasons, most useful first, for the card and the log."""
+        out: list[str] = []
+        s = self.effective_settings
+
+        def names(ids: list[str]) -> str:
+            shown = [self.rooms[r].cfg.name for r in ids[:4]]
+            return ", ".join(shown) + (f" and {len(ids) - 4} more" if len(ids) > 4 else "")
+
+        if self._season_off and self.outdoor_mean is not None:
+            out.append(f"Mild day: outdoor {self.outdoor_mean:.1f}°, season gate {s.season_gate:g}°. "
+                       "Only rooms in use, or ones you pick, are heated.")
+        if self.away:
+            out.append("Away: only rooms you pick with Heat now are heated.")
+        near = []
+        for rid, d in plan.rooms.items():
+            room, t = self.rooms[rid], self.room_temp(self.rooms[rid])
+            if d.verdict.value == "idle" and room.occupied and t is not None and d.need.target is not None and d.need.target > s.safety:
+                near.append(f"{room.cfg.name} {t:.1f}° (heats at {d.need.target - s.hysteresis:.1f}° or below)")
+        if near:
+            out.append("In use and warm enough: " + ", ".join(near[:3]))
+        empty = [rid for rid, d in plan.rooms.items() if d.verdict.value == "vetoed" and d.reason.endswith("empty room")]
+        if empty:
+            out.append(f"Empty rooms wait on mild days: {names(empty)}")
+        coasting = [rid for rid, d in plan.rooms.items() if d.verdict.value == "deferred"]
+        if coasting:
+            out.append(f"Warming by itself or waiting: {names(coasting)}")
+        return out or ["Every room is at its target."]
+
     @property
     def effective_mode(self) -> Mode:
         return Mode.OFF if self.away else self.mode
@@ -1238,9 +1360,13 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         else:
             boiler = self._state(self.house_cfg.get(CONF_BOILER_ON))
             boiler_on = self._boiler_is_on(boiler)
+        self._season_off = season_is_off(self._season_off, self.outdoor_mean, self.effective_settings.season_gate, SEASON_GATE_BAND)
         return HouseSnapshot(
             now=now,
-            mode=self.effective_mode,
+            mode=self.mode,
+            away=self.away,
+            season_off=self._season_off,
+            one_cycle_all=self.mode is Mode.ONE_CYCLE and self.one_cycle_all,
             night=self._is_night(now),
             outdoor_mean=self.outdoor_mean,
             hw_calling=bool(hw and hw.state in _ON_STATES),

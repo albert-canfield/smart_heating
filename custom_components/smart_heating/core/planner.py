@@ -43,9 +43,7 @@ def make_plan(
 
     # Voice 2, per room.
     approved: list[tuple[RoomConfig, RoomSnapshot]] = []
-    season_off = (
-        house.outdoor_mean is not None and house.outdoor_mean >= s.season_gate
-    )
+    season_off = house.season_off if house.season_off is not None else season_is_off(None, house.outdoor_mean, s.season_gate)
     for cfg, snap in rooms:
         need = needs[cfg.room_id]
         if snap.temp is None:
@@ -58,20 +56,20 @@ def make_plan(
             approved.append((cfg, snap))
             decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.APPROVED, "safety")
             continue
+        why = need.reason
         if season_off:
-            decisions[cfg.room_id] = RoomDecision(
-                cfg.room_id, need, Verdict.VETOED,
-                f"outdoor mean {house.outdoor_mean:.1f} >= {s.season_gate:.0f}",
-            )
-            continue
+            allowed, why = _mild_day(snap, need, house, s)
+            if not allowed:
+                decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.VETOED, why)
+                continue
         heating_this_room = bool((house.boiler_on and snap.valve_open and cfg.radiator) or snap.heater_on)
-        if not heating_this_room and _coasting(snap, need.deficit, s):
+        if need.level is not Level.MANUAL and not heating_this_room and _coasting(snap, need.deficit, s):
             decisions[cfg.room_id] = RoomDecision(
                 cfg.room_id, need, Verdict.DEFERRED, f"coasting {snap.trend:+.2f}/h"
             )
             continue
         approved.append((cfg, snap))
-        decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.APPROVED, need.reason)
+        decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.APPROVED, why)
 
     # Stack: upper rooms with a small deficit wait while a lower floor heats.
     lower_active = [c.floor for c, _ in approved]
@@ -82,7 +80,7 @@ def make_plan(
             need = needs[cfg.room_id]
             if (
                 cfg.floor > lowest
-                and need.level is not Level.SAFETY
+                and need.level not in (Level.SAFETY, Level.MANUAL)
                 and need.deficit < s.stack_small_deficit
                 and snap.deferred_min < s.stack_max_wait_min
             ):
@@ -106,10 +104,11 @@ def make_plan(
         decisions[rid] = RoomDecision(rid, needs[rid], Verdict.APPROVED, "electric heater, instead of firing the boiler for one room")
         approved = []
 
-    # Batching: don't fire for a single small low-priority deficit.
-    if approved and not house.boiler_on and all(
+    # Batching: don't fire for a single small low-priority deficit (unless you asked for heat).
+    asked = house.mode is Mode.ONE_CYCLE or house.one_cycle_all
+    if approved and not house.boiler_on and not asked and all(
         c.priority is Priority.C and needs[c.room_id].deficit < s.batch_min_deficit
-        and needs[c.room_id].level is not Level.SAFETY
+        and needs[c.room_id].level not in (Level.SAFETY, Level.MANUAL)
         for c, _ in approved
     ):
         for cfg, _ in approved:
@@ -121,6 +120,8 @@ def make_plan(
     any_safety = any(needs[c.room_id].level is Level.SAFETY for c, _ in approved)
     want_on = bool(approved)
     status, reason = ("heating", f"{len(approved)} room(s) approved") if want_on else ("idle", "no approved demand")
+    if house.away and not want_on:
+        status, reason = "off", "away"
 
     if not boiler_control:
         plan = _valve_only(rooms, approved, decisions, house, want_on, status, reason, s)
@@ -140,6 +141,8 @@ def make_plan(
 
     if house.mode is Mode.OFF and not any_safety:
         want_on, status, reason, hold = False, "off", "mode off", False
+    elif house.away and not approved:  # nothing you asked for: away stops the boiler at once, like Off
+        want_on, status, reason, hold = False, "off", "away", False
 
     # Valves (lazy): only move when the boiler will run, never during a min-run hold.
     if want_on and not hold:
@@ -203,6 +206,30 @@ def _valve_only(rooms, approved, decisions, house: HouseSnapshot, want_on: bool,
         if snap.valve_open is None or snap.valve_open != should_open:
             decisions[cfg.room_id].open_valve = should_open
     return Plan(want_on, decisions, status, reason)
+
+
+def season_is_off(prev: bool | None, mean: float | None, gate: float, band: float = 0.5) -> bool:
+    """Mild day: the outdoor day mean is at or above the gate. Once mild, it stays mild until the
+    mean drops `band` below the gate, so it doesn't flip while the mean hovers at the gate."""
+    if mean is None:
+        return False
+    return mean >= gate - band if prev else mean >= gate
+
+
+def _mild_day(snap: RoomSnapshot, need, house: HouseSnapshot, s: Settings) -> tuple[bool, str]:
+    """On a mild day automatic heating needs strong evidence; what you ask for always passes."""
+    gate = f"mild day (outdoor {house.outdoor_mean:.1f}° ≥ {s.season_gate:g}°)"
+    if need.level is Level.MANUAL:
+        return True, "manual heat"
+    if house.one_cycle_all:
+        return True, "One Cycle, every room below target"
+    if need.level is not Level.COMFORT:
+        return False, f"{gate}, empty room"
+    if house.mode is Mode.ONE_CYCLE:
+        return True, f"One Cycle ({need.reason})"
+    if need.deficit >= s.mild_margin and (snap.trend is None or snap.trend < s.coast_rate):
+        return True, f"cold room on a mild day ({need.reason})"
+    return False, f"{gate}, not cold enough"
 
 
 def _tops_up(snap: RoomSnapshot, target: float | None, s: Settings) -> bool:

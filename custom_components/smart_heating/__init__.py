@@ -14,7 +14,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, PLATFORMS, SERVICE_HEAT_TEST, SERVICE_RELEARN, SERVICE_START_CONTROL, STORE_VERSION, VERSION
+from .const import DOMAIN, PLATFORMS, SERVICE_HEAT_TEST, SERVICE_ONE_CYCLE, SERVICE_RELEARN, SERVICE_START_CONTROL, STORE_VERSION, VERSION
+from .core import Mode
 from .coordinator import HeatingCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,6 +56,10 @@ def _async_register_services(hass: HomeAssistant) -> None:
         for c in _coordinators(hass):
             await c.async_start_control()
 
+    async def one_cycle(call: ServiceCall) -> None:
+        for c in _coordinators(hass):
+            await c.async_set_mode(Mode.ONE_CYCLE, all_rooms=call.data.get("all_rooms", False))
+
     async def relearn(call: ServiceCall) -> None:
         wanted = {n.strip().lower() for n in call.data["rooms"]}
         for c in _coordinators(hass):
@@ -67,6 +72,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, SERVICE_HEAT_TEST, heat_test, vol.Schema({vol.Optional("start", default=True): cv.boolean, vol.Optional("ignore_automations", default=False): cv.boolean}))
     # skip_calibration is accepted for old automations; control no longer waits for calibration.
     hass.services.async_register(DOMAIN, SERVICE_START_CONTROL, start_control, vol.Schema({vol.Optional("skip_calibration"): cv.boolean}))
+    hass.services.async_register(DOMAIN, SERVICE_ONE_CYCLE, one_cycle, vol.Schema({vol.Optional("all_rooms", default=False): cv.boolean}))
     hass.services.async_register(DOMAIN, SERVICE_RELEARN, relearn, vol.Schema({vol.Required("rooms"): vol.All(cv.ensure_list, [cv.string])}))
 
 

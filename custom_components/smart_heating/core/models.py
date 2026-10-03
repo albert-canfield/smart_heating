@@ -16,8 +16,9 @@ class Level(str, Enum):
     """Voice 1 need level, highest first."""
 
     SAFETY = "safety"
-    COMFORT = "comfort"
-    BASELINE = "baseline"
+    MANUAL = "manual"  # Heat now: you asked for this room
+    COMFORT = "comfort"  # in use: presence, schedule, lights at night
+    BASELINE = "baseline"  # empty room
     NONE = "none"
 
 
@@ -49,7 +50,8 @@ class Settings:
     baseline_day: float = 17.0
     baseline_night: float = 15.0
     safety: float = 12.0
-    season_gate: float = 14.0
+    season_gate: float = 15.5  # outdoor day mean at or above it = mild day
+    mild_margin: float = 1.5  # on mild days a room in use heats only this far below target
     hysteresis: float = 0.5
     overshoot: float = 0.1
     min_run_min: float = 10.0
@@ -101,6 +103,9 @@ class HouseSnapshot:
     hw_calling_min: float = 0.0  # minutes hot water has been calling
     boiler_on: bool = False
     boiler_state_min: float = 1e9  # minutes since boiler last changed state
+    away: bool = False  # automatic heating stops; Heat now still works
+    season_off: bool | None = None  # mild day (None: work it out from outdoor_mean)
+    one_cycle_all: bool = False  # One Cycle, heat every room below its target
 
 
 @dataclass

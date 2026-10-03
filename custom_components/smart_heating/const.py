@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.10.1"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.10.2"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -62,6 +62,7 @@ OPT_KEYS = [
     "baseline_night",
     "safety",
     "season_gate",
+    "mild_margin",
     "hysteresis",
     "min_run_min",
     "min_off_min",
@@ -106,6 +107,9 @@ HEAT_TEST_CAP = 21.5  # a room never goes above this during the test
 HEAT_TEST_RISE = 1.0  # a room stops once it is this much warmer than at the start
 SERVICE_HEAT_TEST = "heat_test"
 SERVICE_RELEARN = "relearn"
+SERVICE_ONE_CYCLE = "one_cycle"
+ONE_CYCLE_WAIT_MIN = 3  # One Cycle with nothing to heat waits this long, then Off
+SEASON_GATE_BAND = 0.5  # a mild day ends when the mean drops this far below the gate
 STARTUP_GRACE_MIN = 2  # sensors may still be coming up after a restart
 BOILER_SILENT_MIN = 20  # heating called this long without the boiler running sensor turning on
 SERVICE_START_CONTROL = "start_control"

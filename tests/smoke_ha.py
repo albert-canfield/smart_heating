@@ -40,7 +40,7 @@ from homeassistant.config_entries import ConfigEntry, ConfigSubentryData  # noqa
 from homeassistant.util import dt as dt_util  # noqa: E402
 
 from custom_components.smart_heating.coordinator import HeatingCoordinator  # noqa: E402
-from custom_components.smart_heating.core import Mode  # noqa: E402
+from custom_components.smart_heating.core import Mode, Override  # noqa: E402
 from custom_components.smart_heating.core.learn import HEAT_NEEDED  # noqa: E402
 from homeassistant.exceptions import HomeAssistantError  # noqa: E402
 import custom_components.smart_heating.coordinator as _coord  # noqa: E402
@@ -114,6 +114,7 @@ async def main() -> None:
     object.__setattr__(hass.states.get("switch.heating"), "last_changed", dt_util.utcnow() - timedelta(minutes=90))
     await c.async_start()
     await hass.async_block_till_done()
+    assert c.fresh, "first start of a new setup"
     p = c.data
     print("monitor-only plan:", p.status, "|", p.reason, "| boiler", p.boiler_on, "| open", p.open_rooms)
     print("house", c.house_temp, "floors", c.floor_temps, "outdoor mean", c.outdoor_mean, "fmin", c.forecast_min_24h)
@@ -159,13 +160,50 @@ async def main() -> None:
     print("disarmed ->", c.data.status, "| log:", [e["message"] for e in list(c.log)[:3]])
     assert c.data.status != "away"
 
-    # One Cycle ends itself when nothing needs heat.
+    # One Cycle with nothing to heat waits 3 minutes, saying why, then Off.
     hass.states.async_set("sensor.living_t", "19.5")
-    c.mode = Mode.ONE_CYCLE
     c.monitor_only = True
+    await c.async_set_mode(Mode.ONE_CYCLE)
+    print("one cycle wait ->", c.mode.value, "|", c.data.reason, "|", c.one_cycle_wait)
+    assert c.mode is Mode.ONE_CYCLE and c.one_cycle_wait and c.one_cycle_wait["reasons"]
+    c._one_cycle_since -= timedelta(minutes=4)
     await c.async_refresh()
     print("one cycle ->", c.mode.value, "|", c.data.reason)
-    assert c.mode is Mode.OFF
+    assert c.mode is Mode.OFF and c.one_cycle_wait is None and "One Cycle ended: nothing needed heat" in c.data.reason
+
+    # Heat now while Off starts One Cycle; when the room reaches its target, back to Off.
+    hass.states.async_set("sensor.living_t", "18.8")
+    await c.async_set_override("living", Override.HEAT)
+    assert c.mode is Mode.ONE_CYCLE and c.data.rooms["living"].verdict.value == "approved", c.data.rooms["living"]
+    hass.states.async_set("sensor.living_t", "19.5")
+    await c.async_refresh()
+    assert c.mode is Mode.OFF and c.rooms["living"].override is Override.AUTO, (c.mode, c.rooms["living"].override)
+    print("heat now from off -> one cycle -> off ok")
+
+    # Last night replayed: mild day (12.3° against a gate of 10°). Continuous waits for a room in use that is
+    # 0.9° short; One Cycle heats it; an empty room waits either way.
+    from dataclasses import replace
+    gate_before = c.settings
+    c.settings = replace(c.settings, season_gate=10.0)
+    c.house_cfg["outdoor_mean"] = "sensor.mean"
+    hass.states.async_set("sensor.mean", "12.3")
+    hass.states.async_set("sensor.living_t", "18.1")
+    hass.states.async_set("sensor.hall_t", "16.0")
+    c.mode = Mode.CONTINUOUS
+    await c.async_refresh()
+    v = {r: (d.verdict.value, d.reason) for r, d in c.data.rooms.items()}
+    print("mild day, continuous:", v)
+    assert v["living"][0] == "vetoed" and v["living"][1].endswith("not cold enough")
+    assert v["hall"][0] == "vetoed" and v["hall"][1].endswith("empty room")
+    await c.async_set_mode(Mode.ONE_CYCLE)
+    v = {r: (d.verdict.value, d.reason) for r, d in c.data.rooms.items()}
+    print("mild day, one cycle:", v)
+    assert v["living"][0] == "approved" and v["hall"][0] == "vetoed"
+    await c.async_set_mode(Mode.OFF)
+    c.settings = gate_before
+    c.house_cfg.pop("outdoor_mean")
+    hass.states.async_set("sensor.living_t", "19.5")
+    hass.states.async_set("sensor.hall_t", "18.2")
 
     # Setpoints: house target shifts every room and the baseline; rooms keep their difference.
     assert c.setpoints.house == 19.0, c.setpoints.house
@@ -264,6 +302,22 @@ async def main() -> None:
     except HomeAssistantError as err:
         assert "Hall" in str(err)
     hass.states.async_set("sensor.hall_t", "18.2")
+
+    # Off cancels everything at once: the heat test, Heat now, and the boiler, even inside the guard time.
+    hass.states.async_set("sensor.living_t", "19.0")
+    hass.states.async_set("sensor.bed_t", "19.5")
+    boiler_rested()
+    await c.async_heat_test(True)
+    await hass.async_block_till_done()
+    assert hass.states.get("switch.heating").state == "on"
+    c.rooms["bed"].override = Override.HEAT
+    calls.clear()
+    await c.async_set_mode(Mode.OFF)
+    await hass.async_block_till_done()
+    print("off cancels ->", [e["message"][:60] for e in list(c.log)[:3]])
+    assert c.heat_test is None and c.rooms["bed"].override is Override.AUTO
+    assert hass.states.get("switch.heating").state == "off" and ("switch", "turn_off", {"entity_id": "switch.heating"}) in calls
+    c.mode = Mode.CONTINUOUS
 
     # Something else switches the boiler off during a heat test: back off and stop the test, never fight.
     hass.states.async_set("sensor.bed_t", "19.5")
@@ -380,6 +434,7 @@ async def main() -> None:
     c2 = HeatingCoordinator(hass, entry)
     await c2._load()
     assert any(e["message"].startswith("Relearning") for e in c2.log), "log kept across restarts"
+    assert not c2.fresh, "a restart is not a new setup"
     # Deleting the integration deletes its stored data.
     import os
     from custom_components.smart_heating import async_remove_entry
