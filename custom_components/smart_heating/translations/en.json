@@ -55,7 +55,7 @@
         },
         "data_description": {
           "weather": "Your weather integration, e.g. weather.forecast_home.",
-          "outdoor_temperature": "A real outdoor sensor, if you have one. Blended with the forecast."
+          "outdoor_temperature": "Optional: a real outdoor sensor. Without one, the weather entity's current temperature is used."
         }
       },
       "extras": {

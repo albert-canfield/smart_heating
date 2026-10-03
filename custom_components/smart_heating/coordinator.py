@@ -71,6 +71,7 @@ from .const import (
     DEFAULT_BOILER_KW,
     DEFAULT_GAS_PRICE,
     FORECAST_REFRESH_MIN,
+    FORECAST_RETRY_MIN,
     OPT_BOILER_KW,
     OPT_GAS_PRICE,
     OPT_NOTIFY,
@@ -1164,30 +1165,43 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self.gas_cost = self.energy.price(self.gas_kwh, self.gas_price_now)
         self.kwh_per_dd = self.energy.kwh_per_degree_day(self.gas_kwh, self.settings.season_gate)
 
+    def _weather_temp(self, weather: str | None) -> float | None:
+        """The weather entity's current temperature (used when there is no outdoor sensor)."""
+        st = self._state(weather)
+        try:
+            return float(st.attributes["temperature"]) if st is not None else None
+        except (KeyError, TypeError, ValueError):
+            return None
+
     async def _update_climate(self, now: datetime) -> None:
+        weather = self.house_cfg.get(CONF_WEATHER)
         temp = self._float(self.house_cfg.get(CONF_OUTDOOR_TEMP))
+        if temp is None:
+            temp = self._weather_temp(weather)
         if temp is not None:
             self.outdoor.observe(now, temp)
 
-        weather = self.house_cfg.get(CONF_WEATHER)
         due = self._forecast_at is None or now - self._forecast_at >= timedelta(minutes=FORECAST_REFRESH_MIN)
         if weather and due:
             self._forecast_at = now
+            points = []
             try:
                 resp = await self.hass.services.async_call(
                     "weather", "get_forecasts",
                     {"entity_id": weather, "type": "hourly"},
                     blocking=True, return_response=True,
                 )
-                points = []
                 for item in (resp or {}).get(weather, {}).get("forecast", []):
                     when = dt_util.parse_datetime(str(item.get("datetime")))
                     t = item.get("temperature")
                     if when is not None and t is not None:
                         points.append((dt_util.as_utc(when), float(t)))
-                self.outdoor.set_forecast(points)
+                if points:  # an empty answer keeps the forecast we have
+                    self.outdoor.set_forecast(points)
             except Exception as err:  # noqa: BLE001
                 _LOGGER.warning("Forecast fetch from %s failed: %s", weather, err)
+            if not points:  # try again soon rather than in half an hour
+                self._forecast_at = now - timedelta(minutes=FORECAST_REFRESH_MIN - FORECAST_RETRY_MIN)
 
         # An explicit mean sensor wins; otherwise the internal blend.
         explicit = self._float(self.house_cfg.get(CONF_OUTDOOR_MEAN))

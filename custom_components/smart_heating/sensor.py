@@ -221,8 +221,18 @@ class ClimateSensor(HouseEntity, SensorEntity):
             attrs["floor"] = self._floor
             attrs["floor_name"] = self.coordinator.floor_names.get(self._floor)
         if self._kind == "outdoor_day_mean":
-            attrs["now"] = self.coordinator.outdoor.now_temp(dt_util.utcnow())
-            attrs["forecast_points"] = len(self.coordinator.outdoor.forecast)
+            o, now = self.coordinator.outdoor, dt_util.utcnow()
+
+            def r(v):
+                return round(v, 1) if v is not None else None
+
+            attrs["now"] = o.now_temp(now)
+            attrs["observed_mean_12h"] = r(o.observed_mean())
+            attrs["forecast_mean_12h"] = r(o.forecast_mean(now, 12))
+            attrs["forecast_mean_24h"] = r(o.forecast_mean(now, 24))
+            attrs["forecast_min_12h"] = o.forecast_min(now, 12)
+            attrs["forecast_min_24h"] = o.forecast_min(now, 24)
+            attrs["forecast_points"] = len(o.forecast)
         if self._kind == "house_temperature":
             attrs["rooms"] = {
                 r.cfg.name: self.coordinator.room_temp(r) for r in self.coordinator.rooms.values()

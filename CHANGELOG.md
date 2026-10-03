@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1
+- No outdoor sensor needed: without one, the weather entity's current temperature is used.
+- A failed or empty forecast fetch is retried after 5 minutes instead of 30 (for example while the weather entity is still starting), and no longer clears the forecast already held.
+- `sensor.smart_heating_outdoor_day_mean` shows forecast mean and minimum for 12 h and 24 h and the observed 12 h mean as attributes, so template helpers for these can go.
+- Deleting the integration also deletes its stored data (learned models, energy, log), so a new setup starts clean.
+
 ## 0.10.0
 - Heats from day one and learns in the background. The heating logic never used the learned model, so waiting for calibration only delayed it. Setup ends with Start heating now or Watch first; Start control without calibration and Skip calibration are gone.
 - Start heating on the card asks to confirm (Start heating or Cancel, cancels itself after 10 s) and lists other automations that switch the heating.

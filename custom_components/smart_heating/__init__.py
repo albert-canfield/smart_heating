@@ -12,8 +12,9 @@ import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, PLATFORMS, SERVICE_HEAT_TEST, SERVICE_RELEARN, SERVICE_START_CONTROL, VERSION
+from .const import DOMAIN, PLATFORMS, SERVICE_HEAT_TEST, SERVICE_RELEARN, SERVICE_START_CONTROL, STORE_VERSION, VERSION
 from .coordinator import HeatingCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -85,6 +86,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: SmartHeatingConfigEntry
     if ok:
         await entry.runtime_data.async_stop()
     return ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Deleting Smart Heating also deletes what it learned, so a new setup starts clean."""
+    await Store(hass, STORE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
 
 
 async def _async_reload(hass: HomeAssistant, entry: SmartHeatingConfigEntry) -> None:

@@ -76,7 +76,7 @@ Smart Heating heats from day one with sensible defaults and learns your home in 
 
 # Documentation
 
-Version 0.10.0. How it starts:
+Version 0.10.1. How it starts:
 
 1. **Heating from day one** (or **Watching** if you picked *Watch first*: it decides and logs, never touches the boiler or TRVs, until you tap **Start heating** and confirm).
 2. **Learning in the background**: each room's heat-loss time constant, free-heat gain and warm-up rate, from normal life. Heating decisions don't wait for it.
@@ -125,7 +125,8 @@ Electric heaters: a smart plug is switched on/off; a smart heater gets the room 
 
 Other fallbacks:
 - **No room thermometer**: the TRVs' or smart heaters' own reading is used (less accurate near the radiator).
-- **No outdoor sensor or forecast**: season gate and learning are skipped, predictions stay empty.
+- **No outdoor sensor**: the weather entity's current temperature is used, blended with its hourly forecast.
+- **No weather entity either**: season gate and learning are skipped, predictions stay empty.
 - **No presence, lights or media**: rooms use their comfort schedule and manual "Heat now".
 - **No smart meter**: gas is estimated from boiler running time (boiler running sensor, or the heating switch or thermostat) times the boiler's gas input, flagged as an estimate.
 - **No away source**: away mode is never triggered; use the mode buttons.
@@ -150,7 +151,7 @@ Settings, Devices & services, Add integration, Smart Heating. A short wizard:
 2. **Your boiler**: the relay, switch or thermostat for heating, and optionally a boiler running sensor (skipped for electric).
 3. **Your thermostat**: Setpoint or On / off (only if the boiler control is a thermostat).
 4. **Hot water**: tank heating sensor and *Hot water first* (tank and hybrid only).
-5. **Outside temperature**: weather forecast and/or an outdoor sensor.
+5. **Outside temperature**: your weather entity (enough on its own) and optionally a real outdoor sensor.
 6. **Optional extras**: away detection, night schedule.
 7. **Gas use and cost** (gas types): with a smart meter integration (for example Octopus Energy or Glow), pick the gas consumption sensor (a running total in kWh or m³; a total that restarts at midnight is fine) and optionally a unit rate sensor in £/kWh. Without one, enter the boiler's gas input (for example 15 kW) and your unit price, and gas is estimated while the boiler runs.
 8. **Rooms**: areas with a thermometer, TRV or heater are pre-ticked and become rooms in one go. Pick **Start heating now** or **Watch first**.
@@ -196,7 +197,7 @@ House device:
 - `binary_sensor.smart_heating_boiler_demand`
 - `sensor.smart_heating_house_temperature` (+ every room's reading)
 - floor averages (only when rooms span more than one floor)
-- `sensor.smart_heating_outdoor_day_mean`: observed last 12 h blended with forecast next 12 h
+- `sensor.smart_heating_outdoor_day_mean`: observed last 12 h blended with forecast next 12 h. Attributes: `now`, `observed_mean_12h`, `forecast_mean_12h`, `forecast_mean_24h`, `forecast_min_12h`, `forecast_min_24h`, `forecast_points`
 - `sensor.smart_heating_forecast_minimum_24h`
 - `sensor.smart_heating_calibration` (% overall, per room in attributes), `binary_sensor.smart_heating_calibrated`
 - `sensor.smart_heating_house_heat_loss_time_constant` (hours, median of rooms)

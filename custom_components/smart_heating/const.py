@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.10.0"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.10.1"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -35,6 +35,7 @@ STYLE_RELAY, STYLE_SETPOINT = "relay", "setpoint"
 ALARM_AWAY_STATES = ("armed_away", "armed_vacation")
 
 FORECAST_REFRESH_MIN = 30
+FORECAST_RETRY_MIN = 5  # after a failed or empty fetch (e.g. the weather entity still starting)
 
 # Room (subentry data)
 CONF_NAME = "name"

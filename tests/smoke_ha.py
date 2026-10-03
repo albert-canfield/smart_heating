@@ -337,6 +337,23 @@ async def main() -> None:
     assert _coord._NUMBERS.sub("#", "coasting +0.31/h") == _coord._NUMBERS.sub("#", "coasting +0.46/h")
     print("start, relearn, repairs, log key ok")
 
+    # No outdoor sensor: the weather entity's own temperature is used.
+    c.house_cfg.pop("outdoor_temperature")
+    hass.states.async_set("weather.home", "cloudy", {"temperature": 7.5})
+    c.outdoor._hist.clear()  # one reading per 5 min is kept; start clean
+    await c.async_refresh()
+    assert c.outdoor.now_temp(dt_util.utcnow()) == 7.5
+    # A failed forecast fetch is retried within minutes and keeps the forecast already held.
+    pts = len(c.outdoor.forecast)
+    hass.services.async_remove("weather", "get_forecasts")  # e.g. the weather integration still starting
+    c._forecast_at = None
+    await c.async_refresh()
+    assert pts and len(c.outdoor.forecast) == pts
+    assert timedelta(minutes=24) < dt_util.utcnow() - c._forecast_at < timedelta(minutes=26), c._forecast_at
+    hass.services.async_register("weather", "get_forecasts", forecast, supports_response=SupportsResponse.ONLY)
+    c.house_cfg["outdoor_temperature"] = "sensor.outdoor_temperature"
+    print("outdoor fallback and forecast retry ok")
+
     # Every platform's entities build and report without errors.
     import importlib
     from types import SimpleNamespace
@@ -353,6 +370,9 @@ async def main() -> None:
     nums = [e for e in ents if type(e).__name__ in ("HouseTarget", "RoomTarget")]
     print("entities:", len(ents), "| numbers:", [(type(n).__name__, n.native_value) for n in nums])
     cal = next(e for e in ents if getattr(e, "_kind", None) == "calibration")
+    od = next(e for e in ents if getattr(e, "_kind", None) == "outdoor_day_mean").extra_state_attributes
+    assert {"observed_mean_12h", "forecast_mean_12h", "forecast_mean_24h", "forecast_min_12h", "forecast_min_24h"} <= set(od), od
+    print("outdoor day mean attrs:", {k: v for k, v in od.items() if k != "kind"})
     print("calibration attrs:", {k: v for k, v in cal.extra_state_attributes.items() if k != "rooms"})
 
     # The log survives a restart.
@@ -360,6 +380,13 @@ async def main() -> None:
     c2 = HeatingCoordinator(hass, entry)
     await c2._load()
     assert any(e["message"].startswith("Relearning") for e in c2.log), "log kept across restarts"
+    # Deleting the integration deletes its stored data.
+    import os
+    from custom_components.smart_heating import async_remove_entry
+    stored = hass.config.path(".storage", f"smart_heating.{entry.entry_id}")
+    assert os.path.exists(stored)
+    await async_remove_entry(hass, entry)
+    assert not os.path.exists(stored), "store removed with the entry"
     await hass.async_stop()
     print("SMOKE OK")
 
