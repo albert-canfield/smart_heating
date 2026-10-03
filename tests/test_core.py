@@ -166,11 +166,23 @@ def test_satisfied_room_closed_while_boiler_runs():
 def test_piggyback_room_near_target():
     rooms = [
         (LIVING, RoomSnapshot(temp=18.0, occupied=True, valve_open=False)),
-        (KITCHEN, RoomSnapshot(temp=18.8, occupied=True, valve_open=False)),
+        (KITCHEN, RoomSnapshot(temp=18.7, occupied=True, valve_open=False)),
     ]
     p = make_plan(rooms, house(), S)
     assert p.rooms["kitchen"].verdict is Verdict.PIGGYBACK
     assert set(p.open_rooms) == {"living", "kitchen"}
+
+
+def test_piggyback_margin_stops_valve_flapping():
+    living = (LIVING, RoomSnapshot(temp=18.0, occupied=True, valve_open=False))
+
+    def kitchen(temp, valve_open):
+        p = make_plan([living, (KITCHEN, RoomSnapshot(temp=temp, occupied=True, valve_open=valve_open))], house(), S)
+        return p.rooms["kitchen"].verdict
+
+    assert kitchen(18.8, False) is Verdict.IDLE  # 0.2 below target: not worth opening
+    assert kitchen(18.95, True) is Verdict.PIGGYBACK  # already open: carry on to target + overshoot
+    assert kitchen(19.1, True) is Verdict.IDLE
 
 
 def test_batching_skips_tiny_low_priority_call():
@@ -274,6 +286,21 @@ def test_learner_recovers_tau_and_gain():
     _simulate(m, hours=72, tout_fn=lambda h: 2 + 8 * (h % 24) / 24)
     assert m.tau and 70 < m.tau < 100
     assert m.gain and 4.0 < m.gain < 7.0
+
+
+def test_learner_prior_gives_sane_tau_from_one_mild_night():
+    # One mild night read at 0.1 degC resolution: outside falls with the room, so Tin - Tout
+    # barely varies and the slope alone is noise. The free-heat prior keeps tau plausible.
+    m = RoomModel.new()
+    tin, k, t = 22.0, 1 / 40.0, NOW
+    for i in range(10 * 12):  # 10 h, 5 min ticks
+        tout = 12 - i / 36
+        m.observe(t, round(tin, 1), tout, Phase.FREE)
+        tin += -k * (tin - tout - 1.5) * (5 / 60)
+        t += timedelta(minutes=5)
+    assert m.free.spread < 2.0
+    assert m.tau and 25 < m.tau < 60, m.tau
+    assert m.gain is not None and -1 < m.gain < 4, m.gain
 
 
 def test_learner_progress_and_completion():

@@ -42,7 +42,7 @@
         },
         "data_description": {
           "hot_water_system": "Tank: a cylinder in a cupboard (also known as S-plan or Y-plan). Combi: hot water straight from the boiler.",
-          "hw_calling": "On while the tank is heating, e.g. its zone valve or programmer channel.",
+          "hw_calling": "On while the tank is asking for heat, e.g. its zone valve or programmer channel. Not the boiler running sensor: leave it empty if you don't have a separate signal.",
           "hot_water_priority": "Pause room heating while the tank heats, so showers are ready sooner. Combi boilers do this by themselves."
         }
       },
@@ -105,18 +105,23 @@
       },
       "rooms": {
         "title": "Rooms",
-        "description": "Each Home Assistant area becomes a room, with its thermometer, TRVs or heaters, presence sensors and lights filled in. {count} area(s) found. You can add, remove or adjust rooms any time.\n\nAfter this, Smart Heating learns your house for 1 to 3 days. It only watches until then.",
+        "description": "Each Home Assistant area becomes a room, with its thermometer, TRVs or heaters, presence sensors and lights filled in. {count} area(s) found. You can add, remove or adjust rooms any time.",
         "data": {
-          "areas": "Areas to heat"
+          "areas": "Areas to heat",
+          "start_mode": "When setup finishes"
         },
         "data_description": {
-          "areas": "Untick areas you don't want heated. Gardens are skipped."
+          "areas": "Untick areas you don't want heated. Gardens are skipped.",
+          "start_mode": "Smart Heating learns how each room holds heat in the background either way (1 to 3 days). Watch first: it only decides and logs until you tap Start heating on the card."
         }
       }
     },
     "abort": {
       "already_configured": "Smart Heating is already set up.",
       "reconfigure_successful": "Saved."
+    },
+    "error": {
+      "same_as_boiler": "This is the boiler's own switch or running sensor. Pick the tank's own signal, or leave it empty."
     }
   },
   "options": {
@@ -127,6 +132,7 @@
           "temperatures": "Temperatures & Night",
           "prices": "Energy Prices",
           "import_areas": "Import Rooms From Areas",
+          "relearn": "Relearn Rooms",
           "advanced": "Advanced"
         }
       },
@@ -141,6 +147,17 @@
           "areas": "Each area becomes a room. Gardens are skipped.",
           "refresh_sensors": "Re-pick thermometer and humidity for rooms already added. Other settings kept."
         }
+      },
+      "relearn": {
+        "title": "Relearn rooms",
+        "description": "Clears what Smart Heating has learned for the rooms you pick, for example after a valve was shut during the heat test or after new windows. They learn again from now (about a day of cooling and 2 h of heating). Heating carries on as usual.",
+        "data": {
+          "rooms": "Rooms"
+        }
+      },
+      "relearn_confirm": {
+        "title": "Relearn these rooms?",
+        "description": "Learned data for {rooms} will be cleared. This can't be undone. Submit to continue, or close this window to cancel."
       },
       "temperatures": {
         "title": "Temperatures & Night",
@@ -189,8 +206,7 @@
           "trv_open_offset": "TRV open offset",
           "trv_closed": "TRV closed setpoint",
           "hw_max_pause_min": "Hot water max pause",
-          "notify_service": "Notify service (e.g. notify.mobile_app_phone)",
-          "skip_calibration": "Skip calibration"
+          "notify_service": "Notify service (e.g. notify.mobile_app_phone)"
         },
         "data_description": {
           "hysteresis": "Heat starts this far below target. Bigger = fewer burns.",
@@ -202,10 +218,16 @@
           "trv_open_offset": "Open TRV = target plus this. Caps the room if HA stops.",
           "trv_closed": "Closed TRV setpoint.",
           "hw_max_pause_min": "Longest heating pauses for hot water.",
-          "notify_service": "Phone notification when calibration finishes, e.g. notify.mobile_app_phone.",
-          "skip_calibration": "Start control without waiting for calibration (usually 1 to 3 days). Defaults are used until learning catches up in the background."
+          "notify_service": "Phone notification when learning finishes, e.g. notify.mobile_app_phone."
         }
       }
+    },
+    "error": {
+      "no_rooms": "Pick at least one room."
+    },
+    "abort": {
+      "relearned": "Done: {rooms} will learn again from now.",
+      "not_loaded": "Smart Heating isn't running. Reload it and try again."
     }
   },
   "config_subentries": {
@@ -348,6 +370,12 @@
       "options": {
         "smart_meter": "Smart meter integration",
         "estimate": "No smart meter: estimate from the boiler"
+      }
+    },
+    "start_mode": {
+      "options": {
+        "heat_now": "Start heating now, learn in the background",
+        "watch_first": "Watch first, start heating later"
       }
     }
   },
@@ -511,14 +539,32 @@
       }
     },
     "start_control": {
-      "name": "Start control",
-      "description": "Turns Monitor only off so Smart Heating drives the boiler and TRVs.",
+      "name": "Start heating",
+      "description": "Turns Monitor only off so Smart Heating drives the boiler and TRVs. Learning carries on in the background."
+    },
+    "relearn": {
+      "name": "Relearn rooms",
+      "description": "Clears what Smart Heating has learned for the named rooms; they learn again from now.",
       "fields": {
-        "skip_calibration": {
-          "name": "Skip calibration",
-          "description": "Start before calibration ends, with default settings. Learning continues in the background."
+        "rooms": {
+          "name": "Rooms",
+          "description": "Room names, as shown on the card."
         }
       }
+    }
+  },
+  "issues": {
+    "hw_same_as_boiler": {
+      "title": "Hot water sensor is the boiler's own signal",
+      "description": "The hot water setting uses {entity}, which is also the boiler's switch or running sensor. It says the boiler is running, not that the tank wants heat, so Smart Heating ignores it for hot water priority and the gas split. Open Smart Heating, Reconfigure, and on the Hot water step pick the tank's own signal (zone valve or programmer channel) or leave it empty."
+    },
+    "competing_automations": {
+      "title": "Other automations switch the heating",
+      "description": "These enabled automations also switch the boiler control: {automations}. While Smart Heating is heating, turn them off so they don't fight. Smart Heating backs off when something else switches the boiler, but the house is better served by one controller."
+    },
+    "boiler_sensor_silent": {
+      "title": "Boiler running sensor did not respond",
+      "description": "Smart Heating has called for heat for {minutes} minutes, but {sensor} never turned on. Check that the sensor follows the boiler, that nothing else (a room thermostat in series, a timer) blocks the call, and that the boiler has power. This clears itself once the sensor turns on."
     }
   }
 }

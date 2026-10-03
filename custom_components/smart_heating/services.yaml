@@ -9,8 +9,11 @@ heat_test:
       selector:
         boolean:
 start_control:
+relearn:
   fields:
-    skip_calibration:
-      default: false
+    rooms:
+      required: true
+      example: '["Master Bedroom"]'
       selector:
-        boolean:
+        text:
+          multiple: true

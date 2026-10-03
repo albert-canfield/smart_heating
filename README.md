@@ -51,7 +51,7 @@ One card for the whole house: temperature, status at a glance, floor averages, m
   </tr>
   <tr>
     <td><b>Every room, explained.</b> Why it is heating or waiting, its own target, predictions for the next hours, energy used and its insulation grade.</td>
-    <td><b>Calibration you can follow.</b> See what it is learning and how long is left, and speed it up with a one-tap heat test.</td>
+    <td><b>Learning you can follow.</b> See what it is learning and how long is left, and speed it up with a gentle one-tap heat test.</td>
   </tr>
 </table>
 
@@ -70,28 +70,27 @@ Two voices must agree before the boiler fires. **Need** asks whether a room is b
 2. Settings, Devices & services, Add integration, **Smart Heating**. Answer the short wizard and tick the rooms to heat.
 3. Add the card to a dashboard: `type: custom:smart-heating-card`.
 
-Smart Heating then learns your home for 1 to 3 days while it only watches. You get a notification when it is ready; tap **Start control** on the card.
+Smart Heating heats from day one with sensible defaults and learns your home in the background (1 to 3 days). Prefer to look first? Pick **Watch first** at the end of setup and tap **Start heating** on the card when you're happy.
 
 ---
 
 # Documentation
 
-Version 0.9.8. Lifecycle:
+Version 0.10.0. How it starts:
 
-1. **Calibrating** (watching only): learns each room's heat-loss time constant, free-heat gain and warm-up rate from normal life. Decides and logs, never touches the boiler or TRVs.
-2. **Ready**: a notification says calibration is done (Home Assistant, plus your phone if a notify service is set).
-3. **Controlling**: drives the boiler, TRVs and heaters.
+1. **Heating from day one** (or **Watching** if you picked *Watch first*: it decides and logs, never touches the boiler or TRVs, until you tap **Start heating** and confirm).
+2. **Learning in the background**: each room's heat-loss time constant, free-heat gain and warm-up rate, from normal life. Heating decisions don't wait for it.
+3. **Learned**: predictions, insulation grades and warm-up appear room by room as each is learned, and a notification arrives when most rooms are done.
 
-### Calibration in short
+### Learning in short
 
 | Question | Answer |
 |---|---|
-| What does it need? | Per room: about 24 h of **cooling data** (boiler off for at least 1 h), a 2° **range** in the inside/outside gap, and about 2 h of **heating data** (boiler on, radiator open). Done when 80% of rooms have all three. |
-| How long? | Usually 1 to 3 days. The card shows progress, what it's collecting now, and roughly how long is left: tap the **Calibrating** badge. |
-| Can I use it meanwhile? | It only watches and logs. Keep your existing heating as it is. |
-| How do I speed it up? | Tap **Run heat test** on the card. It is gentle: only rooms that still need heating data are opened, each stops about 1° warmer than it started and never above 21.5°, usually in under 2 h. Then the house cools. Pause your own heating schedule while it runs. Leave the heating off overnight: each night gives up to 10 h of cooling data. |
-| When it's done? | A notification arrives and the card shows **Start control**. Tap it. |
-| Can I skip it? | Yes: **Start now without calibration** on the card, or *Skip calibration* in Configure. Defaults are used; learning continues in the background. |
+| What does it need? | Per room: about 24 h of **cooling data** (boiler off for at least 1 h), a 2° **range** in the inside/outside gap, and about 2 h of **heating data** (boiler on, radiator open). Done when 80% of rooms have all three. Until the range builds up, a typical free-heat value keeps first estimates sensible. |
+| How long? | Usually 1 to 3 days. Tap the **Learning** badge on the card for progress, what it's collecting now and roughly how long is left. |
+| Does heating wait for it? | No. The heating logic (targets, presence, night, hysteresis, coasting, stack effect, hot water priority, boiler protection) works from the start. |
+| How do I speed it up? | Tap **Run heat test** in the Learning panel. It is gentle: only rooms that still need heating data are opened, each stops about 1° warmer than it started and never above 21.5°. A room without a smart valve can only be stopped with the boiler, so the test ends when one reaches 21.5°. Usually under 2 h, then the house cools. Leave the heating off overnight: each night gives up to 10 h of cooling data. |
+| A room learned something wrong? | Configure, **Relearn Rooms**: pick the rooms and confirm. For example after a valve was shut during the heat test, or after new windows. |
 
 Only real radiator heat counts: burns for hot water only (cylinder with the heating valve shut, or a combi running a tap) are treated as cooling time. Progress is saved, so restarts don't lose it.
 
@@ -126,7 +125,7 @@ Electric heaters: a smart plug is switched on/off; a smart heater gets the room 
 
 Other fallbacks:
 - **No room thermometer**: the TRVs' or smart heaters' own reading is used (less accurate near the radiator).
-- **No outdoor sensor or forecast**: season gate and calibration are skipped, control is allowed straight away, predictions stay empty.
+- **No outdoor sensor or forecast**: season gate and learning are skipped, predictions stay empty.
 - **No presence, lights or media**: rooms use their comfort schedule and manual "Heat now".
 - **No smart meter**: gas is estimated from boiler running time (boiler running sensor, or the heating switch or thermostat) times the boiler's gas input, flagged as an estimate.
 - **No away source**: away mode is never triggered; use the mode buttons.
@@ -154,13 +153,15 @@ Settings, Devices & services, Add integration, Smart Heating. A short wizard:
 5. **Outside temperature**: weather forecast and/or an outdoor sensor.
 6. **Optional extras**: away detection, night schedule.
 7. **Gas use and cost** (gas types): with a smart meter integration (for example Octopus Energy or Glow), pick the gas consumption sensor (a running total in kWh or m³; a total that restarts at midnight is fine) and optionally a unit rate sensor in £/kWh. Without one, enter the boiler's gas input (for example 15 kW) and your unit price, and gas is estimated while the boiler runs.
-8. **Rooms**: areas with a thermometer, TRV or heater are pre-ticked and become rooms in one go.
+8. **Rooms**: areas with a thermometer, TRV or heater are pre-ticked and become rooms in one go. Pick **Start heating now** or **Watch first**.
 
-Everything can be changed later: **Reconfigure** repeats the wizard; **Configure** has short pages for *Temperatures & Night*, *Energy Prices*, *Import Rooms From Areas* and *Advanced*.
+Everything can be changed later: **Reconfigure** repeats the wizard; **Configure** has short pages for *Temperatures & Night*, *Energy Prices*, *Import Rooms From Areas*, *Relearn Rooms* and *Advanced*.
+
+**Setup checks** (Settings, Repairs): a hot water sensor that is really the boiler's own switch or running sensor (it is then ignored for hot water priority and the gas split; the wizard no longer accepts it), other automations that switch the heating while Smart Heating heats, and a boiler running sensor that doesn't turn on within 20 minutes of a heating call.
 
 **Night period**: while the night schedule is on, the baseline drops to the night value (15°C) and comfort heat only goes to rooms with lights on or a manual "Heat now". Bedroom evening pre-heat comes from each room's own comfort schedule.
 
-**Frost protection** is the safety floor (12°C default, adjustable down to 5°C). It is always on: in Off, while away, and during calibration it still fires the boiler if any room drops below it. There is deliberately no switch to disable it.
+**Frost protection** is the safety floor (12°C default, adjustable down to 5°C). It is always on while Smart Heating is heating: in Off and while away it still fires the boiler if any room drops below it. There is deliberately no switch to disable it. In Watch mode Smart Heating switches nothing at all, so frost protection then relies on your existing heating.
 
 **Rooms come from your Home Assistant areas.** A room is an area: its name and floor come from Settings → Areas & floors and stay in sync when you rename or move things. Floor order uses each floor's level, or the floor name ("Ground Floor", "1st Floor") when no level is set.
 
@@ -180,7 +181,7 @@ For each area it picks up: the area's own temperature and humidity sensors (Sett
 
 Room devices created by Smart Heating are placed in their area, so they appear on the area's page.
 
-**Configure** pages: *Temperatures & Night* (baseline day 17°C, night 15°C, night times, safety 12°C, season gate 14°C, override length), *Energy Prices* (gas unit price, boiler kW for estimates, electricity unit price), *Advanced* (hysteresis, coasting, stack wait, boiler min run/off, TRV setpoints, hot water pause, notify service, Skip calibration). Pages only show what your heating type uses.
+**Configure** pages: *Temperatures & Night* (baseline day 17°C, night 15°C, night times, safety 12°C, season gate 14°C, override length), *Energy Prices* (gas unit price, boiler kW for estimates, electricity unit price), *Relearn Rooms* (clear what chosen rooms have learned, asked to confirm), *Advanced* (hysteresis, coasting, stack wait, boiler min run/off, TRV setpoints, hot water pause, notify service). Pages only show what your heating type uses.
 
 ## Entities
 
@@ -189,7 +190,7 @@ House device:
 - `switch.smart_heating_controller_enabled`: kill switch (turns the boiler off)
 - `switch.smart_heating_monitor_only`: on = decide and log only
 - `number.smart_heating_house_target`: house target (shifts every room)
-- services `smart_heating.heat_test` (start / stop) and `smart_heating.start_control` (optionally `skip_calibration: true`)
+- services `smart_heating.heat_test` (start / stop), `smart_heating.start_control` (leave watch mode) and `smart_heating.relearn` (`rooms: ["Master Bedroom"]`)
 - `sensor.smart_heating_status`: heating / idle / paused / waiting / off / away / fault / disabled (+ reason, calling/open rooms)
 - `sensor.smart_heating_decision_log`: latest decision; last 50 entries in attributes (not stored in the database)
 - `binary_sensor.smart_heating_boiler_demand`
@@ -212,7 +213,7 @@ Per room device: `target` (number), `need`, `decision` (with reason), `occupied`
 
 ## Insulation index
 
-Once calibrated, every room, floor and the house get a **heat retention** score (0–100) and an EPC-style grade:
+Once learned, every room, floor and the house get a **heat retention** score (0–100) and an EPC-style grade:
 
 | Grade | Time constant | Meaning |
 |---|---|---|
@@ -224,7 +225,7 @@ Once calibrated, every room, floor and the house get a **heat retention** score 
 | F | 18–28 h | poor |
 | G | under 18 h | very poor |
 
-The time constant is how long a room takes to lose about 63% of its warmth over outside with the heating off, learned during calibration. Each sensor also shows `loss_per_hour_at_10c` (how fast it cools when it's 10°C colder outside), and the house sensor lists the `weakest_rooms`: good places to check windows, draughts or extractor fans.
+The time constant is how long a room takes to lose about 63% of its warmth over outside with the heating off, learned in the background. Each sensor also shows `loss_per_hour_at_10c` (how fast it cools when it's 10°C colder outside), and the house sensor lists the `weakest_rooms`: good places to check windows, draughts or extractor fans.
 
 It is comparative, not an official EPC: rooms also share heat with their neighbours, so upper floors and inner rooms rate better than their walls alone would.
 
@@ -251,9 +252,9 @@ Compact shows house temperature (always the house average), status with small in
 
 ## Going live
 
-1. Add the house and all rooms. It starts calibrating in monitor only.
-2. Keep your existing heating automation running (it provides the heating samples). Watch `decision` sensors and the card.
-3. When the "Smart Heating is ready" notification arrives and the decisions look right, disable your old controller automation and tap **Start control** on the card.
+1. Turn off your old heating automation, so only one thing switches the boiler (Repairs lists any that still do).
+2. Add the house and all rooms. With **Start heating now** it takes over straight away; with **Watch first** it decides and logs while you compare with your current heating.
+3. When watching, tap **Start heating** on the card and confirm. Learning carries on either way.
 
 **Boiler protection** (applies to every command, including the heat test):
 - The boiler is never switched again within 2 minutes of its last change, whoever made it.

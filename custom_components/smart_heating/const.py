@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.9.8"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.10.0"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -17,6 +17,9 @@ CONF_GAS_METER = "gas_meter"
 CONF_GAS_RATE = "gas_rate"
 CONF_ENERGY_SOURCE = "energy_source"
 SOURCE_METER, SOURCE_ESTIMATE = "smart_meter", "estimate"
+CONF_START_MODE = "start_mode"
+START_HEAT, START_WATCH = "heat_now", "watch_first"
+START_MODES = [START_HEAT, START_WATCH]
 ENERGY_SOURCES = [SOURCE_METER, SOURCE_ESTIMATE]
 CONF_ALARM = "alarm_panel"
 CONF_HEATING_TYPE = "heating_type"
@@ -72,7 +75,6 @@ OPT_OVERRIDE_HOURS = "override_hours"
 OPT_GAS_PRICE = "gas_price"
 OPT_BOILER_KW = "boiler_input_kw"
 OPT_NOTIFY = "notify_service"
-OPT_SKIP_CAL = "skip_calibration"
 OPT_NIGHT_START = "night_start"
 OPT_NIGHT_END = "night_end"
 DEFAULT_NIGHT_START = "22:00:00"
@@ -102,6 +104,9 @@ HEAT_TEST_MIN = 135  # maximum duration: 10 min warm-up + 2 h of heating samples
 HEAT_TEST_CAP = 21.5  # a room never goes above this during the test
 HEAT_TEST_RISE = 1.0  # a room stops once it is this much warmer than at the start
 SERVICE_HEAT_TEST = "heat_test"
+SERVICE_RELEARN = "relearn"
+STARTUP_GRACE_MIN = 2  # sensors may still be coming up after a restart
+BOILER_SILENT_MIN = 20  # heating called this long without the boiler running sensor turning on
 SERVICE_START_CONTROL = "start_control"
 
 # Boiler protection (applies to every command, whatever asked for it)

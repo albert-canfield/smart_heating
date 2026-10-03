@@ -28,7 +28,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddC
     house += [
         Metric(c, "calibration", lambda c: round(c.calibration_progress * 100), PERCENTAGE, kind="calibration",
                attrs=lambda c: {"calibrated": c.calibrated, "available": c.learnable, "learning_now": c.learning_phase,
-                                "started_without_calibration": c.force_start, "heat_test_min_left": c.heat_test_left_min,
+                                "watching_only": c.monitor_only, "heat_test_min_left": c.heat_test_left_min,
                                 "can_heat_test": c.boiler_control or c.has_trvs or c.has_heaters,
                                 "competing_automations": c.competing_automations,
                                 **c.calibration_info,

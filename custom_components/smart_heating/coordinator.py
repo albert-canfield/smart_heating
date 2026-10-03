@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.components import persistent_notification
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -37,6 +39,10 @@ from .const import (
     CONF_ENERGY_SOURCE,
     SOURCE_METER,
     SOURCE_ESTIMATE,
+    CONF_START_MODE,
+    START_WATCH,
+    STARTUP_GRACE_MIN,
+    BOILER_SILENT_MIN,
     CONF_AREA,
     CONF_ALARM,
     CONF_HW_PRIORITY,
@@ -68,7 +74,6 @@ from .const import (
     OPT_BOILER_KW,
     OPT_GAS_PRICE,
     OPT_NOTIFY,
-    OPT_SKIP_CAL,
     OPT_NIGHT_START,
     OPT_NIGHT_END,
     DEFAULT_NIGHT_START,
@@ -124,6 +129,7 @@ from .core import (
 from .core.learn import HEAT_NEEDED
 
 _LOGGER = logging.getLogger(__name__)
+_NUMBERS = re.compile(r"[-+]?\d+(?:\.\d+)?")
 _BAD = (None, STATE_UNAVAILABLE, STATE_UNKNOWN, "")
 _ON_STATES = (STATE_ON, "playing", "home", "heat")
 
@@ -200,7 +206,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         # Runtime state (restored by the select/switch entities).
         self.mode: Mode = Mode.CONTINUOUS
         self.enabled = True
-        self.monitor_only = True
+        self.monitor_only = self.house_cfg.get(CONF_START_MODE, START_WATCH) == START_WATCH  # then restored by its switch
 
         self.rooms: dict[str, Room] = {}
         for sub_id, sub in entry.subentries.items():
@@ -263,7 +269,6 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self._store: Store = Store(hass, STORE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         self.energy = EnergyDay()
         self.cal_notified = False
-        self.skip_calibration = bool(opts.get(OPT_SKIP_CAL, False))
         self.night_start = _parse_time(opts.get(OPT_NIGHT_START, DEFAULT_NIGHT_START))
         self.night_end = _parse_time(opts.get(OPT_NIGHT_END, DEFAULT_NIGHT_END))
         self.notify_service: str = str(opts.get(OPT_NOTIFY, "") or "")
@@ -289,8 +294,9 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self.away_reason = ""
         self.learning_phase = "starting"
         self.setpoints = Setpoints.initial([r.cfg for r in self.rooms.values()])
-        self.force_start = False
         self.welcomed = False
+        self._silent_since: datetime | None = None
+        self._setup_checked: datetime | None = None
         self.heat_test: dict[str, Any] | None = None
         # Boiler protection state.
         self._boiler_cmd_state: bool | None = None
@@ -312,10 +318,12 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         for rid, d in plan.rooms.items():
             room = self.rooms[rid]
             idle = d.verdict.value == "idle"
-            key = "idle" if idle else f"{d.verdict.value}:{d.reason}"
+            key = "idle" if idle else f"{d.verdict.value}:{_NUMBERS.sub('#', d.reason)}"  # trend changes aren't news
             prev = self._last_verdict.get(rid)
             if prev == key:
                 continue
+            if d.verdict.value == "fault" and self.starting:
+                continue  # sensors still coming up after a restart; logged if it lasts
             self._last_verdict[rid] = key
             if idle and prev is None:
                 continue
@@ -402,7 +410,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             "trvs": self.has_trvs,
             "outdoor": self.has_outdoor,
             "presence": any(r.presence or r.media or r.lights for r in self.rooms.values()),
-            "hot_water": bool(self.house_cfg.get(CONF_HW_CALLING)),
+            "hot_water": bool(self.hw_entity),
             "hot_water_system": self.hw_system,
             "hot_water_priority": self.settings.hw_priority,
             "thermostat_style": self.thermostat_style if self._is_thermostat else None,
@@ -413,7 +421,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
     @property
     def calibrated(self) -> bool:
-        if self.skip_calibration or self.force_start or not self.learnable:
+        """Enough rooms have learned their model. Display and notification only: control never waits for it."""
+        if not self.learnable:
             return True
         if not self.rooms:
             return False
@@ -443,8 +452,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             "energy": self.energy.to_dict(),
             "cal_notified": self.cal_notified,
             "setpoints": self.setpoints.to_dict(),
-            "force_start": self.force_start,
             "welcomed": self.welcomed,
+            "log": list(self.log),
             "heat_test": self.heat_test,
             "electric": {
                 "day": self.elec_day, "kwh": self.elec_kwh,
@@ -463,8 +472,10 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         if "energy" in data:
             self.energy = EnergyDay.from_dict(data["energy"])
         self.cal_notified = bool(data.get("cal_notified", False))
-        self.force_start = bool(data.get("force_start", False))
         self.welcomed = bool(data.get("welcomed", False))
+        for entry in data.get("log") or []:  # newest first, older than anything logged since start
+            if isinstance(entry, dict):
+                self.log.append(entry)
         self.heat_test = data.get("heat_test") or None
         el = data.get("electric") or {}
         if el.get("day") == dt_util.as_local(dt_util.utcnow()).date().isoformat():
@@ -478,21 +489,27 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             except (KeyError, TypeError, ValueError) as err:
                 _LOGGER.warning("Discarding stored setpoints: %s", err)
 
+    @property
+    def starting(self) -> bool:
+        """The first minutes after a start, while sensors are still coming up."""
+        return bool(self._started_at and dt_util.utcnow() - self._started_at < timedelta(minutes=STARTUP_GRACE_MIN))
+
     async def _notify_calibrated(self) -> None:
         tau = self.house_tau
         msg = (
-            "Calibration finished: Smart Heating has learned how each room loses and gains heat"
+            "Smart Heating has learned how your rooms lose and gain heat"
             + (f" (house heat-loss time constant about {tau:.0f} h)" if tau else "")
-            + ". It is still watching only. Tap **Start control** on the Smart Heating card (or turn off **Monitor only**) to let it drive the boiler and TRVs."
+            + ": predictions and insulation grades are ready."
+            + (" It is still watching only: tap **Start heating** on the card when you are ready." if self.monitor_only else "")
         )
         persistent_notification.async_create(
-            self.hass, msg, title="Smart Heating is ready", notification_id=f"{DOMAIN}_calibrated"
+            self.hass, msg, title="Smart Heating has learned your house", notification_id=f"{DOMAIN}_calibrated"
         )
         if self.notify_service and "." in self.notify_service:
             domain, service = self.notify_service.split(".", 1)
             try:
                 await self.hass.services.async_call(
-                    domain, service, {"title": "Smart Heating is ready", "message": msg.replace("**", "")}
+                    domain, service, {"title": "Smart Heating has learned your house", "message": msg.replace("**", "")}
                 )
             except Exception as err:  # noqa: BLE001
                 _LOGGER.warning("Notify via %s failed: %s", self.notify_service, err)
@@ -505,8 +522,17 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         return self._firing(dt_util.utcnow())[0]
 
     @property
+    def hw_entity(self) -> str | None:
+        """The hot water call signal. Ignored when it is the boiler's own sensor or switch: that says the
+        boiler is running, not that the tank is asking for heat."""
+        hw = self.house_cfg.get(CONF_HW_CALLING)
+        if hw and hw in (self.house_cfg.get(CONF_BOILER_ON), self.house_cfg.get(CONF_BOILER)):
+            return None
+        return hw or None
+
+    @property
     def hot_water_on(self) -> bool | None:
-        entity = self.house_cfg.get(CONF_HW_CALLING)
+        entity = self.hw_entity
         return self._is_on(entity) if entity else None
 
     @property
@@ -545,18 +571,22 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self._started_at = dt_util.utcnow()
         self._log(f"Started: {self.profile.replace('_', ' ')} profile, {len(self.rooms)} room(s)"
                   + ("" if self.learnable else ", calibration unavailable"))
-        if not self.welcomed and not self.calibrated:
+        if not self.welcomed:
             self.welcomed = True
-            persistent_notification.async_create(
-                self.hass,
-                "Smart Heating is learning how your house holds heat. This usually takes 1 to 3 days.\n\n"
-                "- Until then it only **watches and logs**. Keep your current heating as it is.\n"
-                "- **Speed it up**: run the **Heat test** from the card (about 2 h), and leave the heating off overnight.\n"
-                "- You'll get a notification when it's ready, then tap **Start control**.\n\n"
-                "Progress and what it is collecting are on the card: tap the **Calibrating** badge.",
-                title="Smart Heating is calibrating",
-                notification_id=f"{DOMAIN}_welcome",
+            learning = (
+                "It learns how each room holds heat in the background (usually 1 to 3 days). Predictions and "
+                "insulation grades appear room by room as they are learned. Tap the **Learning** badge on the card "
+                "to see progress or run the gentle **Heat test** to speed it up."
             )
+            if self.monitor_only:
+                title = "Smart Heating is watching"
+                msg = ("It decides and logs what it would do, without touching the boiler or TRVs. When you are happy, "
+                       "tap **Start heating** on the card.\n\n" + learning)
+            else:
+                title = "Smart Heating is heating your home"
+                msg = "It runs on sensible defaults from today.\n\n" + learning
+            persistent_notification.async_create(self.hass, msg, title=title, notification_id=f"{DOMAIN}_welcome")
+        self._check_setup()
         self._unsub = async_track_state_change_event(self.hass, list(tracked), self._on_change)
         await self.async_config_entry_first_refresh()
 
@@ -587,14 +617,11 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         await self.async_request_refresh()
 
     async def async_set_monitor_only(self, value: bool, restoring: bool = False) -> None:
-        if not value and not restoring and not self.calibrated:
-            raise HomeAssistantError(
-                f"Calibration is {self.calibration_progress:.0%} complete. Control unlocks when it "
-                "finishes, or enable 'Skip calibration' in the integration's Configure options."
-            )
         if value != self.monitor_only and not restoring:
-            self._log("Monitor only on" if value else "Monitor only off: controlling boiler and TRVs")
+            self._log("Watching only: decisions are logged, the boiler and TRVs are left alone" if value
+                      else "Heating: Smart Heating now controls the boiler and TRVs")
         self.monitor_only = value
+        self._check_setup()
         await self.async_request_refresh()
 
     # ---------- setpoints ----------
@@ -625,16 +652,60 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
     # ---------- going live ----------
 
     async def async_start_control(self, skip_calibration: bool = False) -> None:
-        """Leave monitor only. Before calibration ends this needs skip_calibration."""
-        if not self.calibrated:
-            if not skip_calibration:
-                raise HomeAssistantError(
-                    f"Calibration is {self.calibration_progress:.0%} complete. Start without it, or wait for the notification."
-                )
-            self.force_start = True
-            self._log("Started without calibration: default settings, learning continues in the background")
+        """Leave watch mode. Learning carries on in the background (skip_calibration is no longer needed)."""
         await self.async_set_monitor_only(False)
         await self._store.async_save(self._store_data())
+
+    async def async_relearn(self, room_ids: list[str]) -> None:
+        """Forget what these rooms have learned; they learn again from now."""
+        for rid in room_ids:
+            room = self.rooms.get(rid)
+            if room is None:
+                continue
+            room.model = RoomModel.new()
+            room.heat_state = room.heat_since = None
+            self._log("Relearning: learned data cleared", room=room.cfg.name)
+        if not self.calibrated:
+            self.cal_notified = False
+        await self._store.async_save(self._store_data())
+        await self.async_request_refresh()
+
+    # ---------- setup checks (Repairs) ----------
+
+    def _issue(self, issue_id: str, active: bool, placeholders: dict[str, str] | None = None) -> None:
+        if active:
+            ir.async_create_issue(
+                self.hass, DOMAIN, issue_id, is_fixable=False, severity=ir.IssueSeverity.WARNING,
+                translation_key=issue_id, translation_placeholders=placeholders or {},
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
+    @callback
+    def _check_setup(self) -> None:
+        """Settings that would make control misbehave, shown in Settings > Repairs."""
+        self._setup_checked = dt_util.utcnow()
+        hw = self.house_cfg.get(CONF_HW_CALLING)
+        self._issue("hw_same_as_boiler", bool(hw) and self.hw_entity is None, {"entity": str(hw)})
+        others = self.competing_automations if self.boiler_control and not self.monitor_only else []
+        self._issue("competing_automations", bool(others), {"automations": ", ".join(others)})
+
+    def _check_boiler_response(self, now: datetime) -> None:
+        """The boiler running sensor should follow a heating call; warn when it stays off."""
+        if not (self.boiler_control and self.house_cfg.get(CONF_BOILER_ON)) or self.monitor_only or self.heat_test:
+            self._silent_since = None
+            return
+        firing, _ = self._firing(now)
+        if firing:
+            self._silent_since = None
+            self._issue("boiler_sensor_silent", False)
+        elif self._commanded_on(self._state(self.boiler_entity)):
+            self._silent_since = self._silent_since or now
+            if now - self._silent_since >= timedelta(minutes=BOILER_SILENT_MIN):
+                self._issue("boiler_sensor_silent", True, {
+                    "sensor": self.house_cfg[CONF_BOILER_ON], "minutes": str(BOILER_SILENT_MIN)})
+        else:
+            self._silent_since = None
 
     @property
     def competing_automations(self) -> list[str]:
@@ -701,6 +772,14 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 f"The rooms that still need heating data are already near {HEAT_TEST_CAP:g}°. "
                 "Run the heat test when the house is cooler."
             )
+        if self.boiler_control:
+            warm = [r.cfg.name for r in self._unvalved_rooms()
+                    if start_temps[r.room_id] is not None and start_temps[r.room_id] >= HEAT_TEST_CAP - 0.3]
+            if warm:
+                raise HomeAssistantError(
+                    f"{', '.join(warm)} {'is' if len(warm) == 1 else 'are'} already near {HEAT_TEST_CAP:g}° and "
+                    "can't be closed (no smart valve). Run the heat test when the house is cooler."
+                )
         boiler = self._state(self.boiler_entity)
         self.heat_test = {
             "until": (now + timedelta(minutes=HEAT_TEST_MIN)).isoformat(),
@@ -725,6 +804,10 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 await self._set_heater(h, True, 25.0, room)
         await self._boiler(True, 25.0)
         await self.async_refresh()
+
+    def _unvalved_rooms(self) -> list[Room]:
+        """Radiators without a smart valve: during the heat test only stopping the boiler stops them."""
+        return [r for r in self.rooms.values() if r.cfg.radiator and not r.trvs]
 
     @property
     def heat_test_left_min(self) -> int | None:
@@ -762,12 +845,17 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 await self._set_heater(h, False, 0, room)
         if self.heat_test is not test:
             return
+        if self.boiler_control:
+            hot = next(((r, t) for r in self._unvalved_rooms() if (t := self.room_temp(r)) is not None and t >= HEAT_TEST_CAP), None)
+            if hot:
+                await self._finish_heat_test(f"stopped: {hot[0].cfg.name} reached {hot[1]:.1f}° and has no smart valve to close")
+                return
         controlled = [r for r in self.rooms.values() if r.trvs or r.heaters]
         all_closed = bool(controlled) and all(r.room_id in test["closed"] for r in controlled)
         if left <= 0 or all_closed:
             await self._finish_heat_test("finished" if left <= 0 else "done for every room")
             return
-        if self.settings.hw_priority and self._is_on(self.house_cfg.get(CONF_HW_CALLING)):
+        if self.settings.hw_priority and self._is_on(self.hw_entity):
             return  # tank heating first; the test carries on after
         await self._boiler(True, 25.0)
 
@@ -890,10 +978,13 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
         self._learn(now, house, pairs)
         self._account(now, house, plan)
-        if self.calibrated and not self.cal_notified and not self.skip_calibration:
+        if self.learnable and self.calibrated and not self.cal_notified:
             self.cal_notified = True
-            self._log("Calibration complete, control unlocked")
+            self._log("Learning complete: predictions and insulation grades are ready")
             self.hass.async_create_task(self._notify_calibrated())
+        self._check_boiler_response(now)
+        if self._setup_checked is None or now - self._setup_checked >= timedelta(minutes=10):
+            self._check_setup()
         self._store.async_delay_save(self._store_data, SAVE_DELAY_S)
 
         # One Cycle ends itself once nothing calls or every caller is coasting.
@@ -926,7 +1017,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             if self.boiler_control:
                 # Show what the test is doing, not what normal control would do.
                 plan.boiler_on = self._commanded_on(self._state(self.boiler_entity))
-        elif plan.status == "fault" and self._started_at and now - self._started_at < timedelta(minutes=2):
+        elif plan.status == "fault" and self.starting:
             plan.status, plan.reason = "starting", "waiting for sensors after start-up"
         if self.boiler_locked_until and now < self.boiler_locked_until:
             plan.reason = f"boiler protection: switching paused until {dt_util.as_local(self.boiler_locked_until):%H:%M}; {plan.reason}"
@@ -937,8 +1028,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             if not self._apply_lock.locked():
                 self.hass.async_create_background_task(self._locked(self._run_heat_test(plan)), f"{DOMAIN}_heat_test")
         elif self.enabled and self.monitor_only:
-            prefix = "monitor only" if self.calibrated else f"calibrating {self.calibration_progress:.0%}"
-            plan.reason = f"{prefix}: {plan.reason}"
+            plan.reason = f"watching only: {plan.reason}"
         elif self.enabled:
             if self._apply_lock.locked():
                 _LOGGER.debug("Previous apply still running, skipping")
@@ -1126,7 +1216,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         return Mode.OFF if self.away else self.mode
 
     def _house_snapshot(self, now: datetime) -> HouseSnapshot:
-        hw = self._state(self.house_cfg.get(CONF_HW_CALLING))
+        hw = self._state(self.hw_entity)
         # Control timing follows what we command; without control, follow what fires.
         if self.boiler_control:
             boiler = self._state(self.boiler_entity)
@@ -1296,7 +1386,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         if (now - self._boiler_cmd_at).total_seconds() < 5:
             return  # our own command still settling
         self._boiler_cmd_state = actual
-        hw = self.settings.hw_priority and self._is_on(self.house_cfg.get(CONF_HW_CALLING))
+        hw = self.settings.hw_priority and self._is_on(self.hw_entity)
         self.external_hold_until = now + timedelta(minutes=EXTERNAL_HOLD_MIN)
         who = "hot water priority" if hw else "something else"
         self._log(f"Boiler switched {'on' if actual else 'off'} by {who}: Smart Heating backs off for {EXTERNAL_HOLD_MIN} min")
@@ -1414,7 +1504,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         or a combi running a tap, leaves the radiators cooling.
         """
         firing, firing_min = self._firing(now)
-        hw = self._is_on(self.house_cfg.get(CONF_HW_CALLING))
+        hw = self._is_on(self.hw_entity)
         delivering = firing and self._heating_demand() and not (self.hw_system == HW_COMBI and hw)
         if self._delivering is None:
             self._delivering, self._delivering_since = delivering, now - timedelta(minutes=min(firing_min, 1e6))

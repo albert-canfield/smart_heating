@@ -40,6 +40,9 @@ from .const import (
     ENERGY_SOURCES,
     SOURCE_METER,
     SOURCE_ESTIMATE,
+    CONF_START_MODE,
+    START_HEAT,
+    START_MODES,
     CONF_AREA,
     CONF_ALARM,
     CONF_HW_PRIORITY,
@@ -69,7 +72,6 @@ from .const import (
     OPT_BOILER_KW,
     OPT_GAS_PRICE,
     OPT_NOTIFY,
-    OPT_SKIP_CAL,
     OPT_NIGHT_START,
     OPT_NIGHT_END,
     DEFAULT_NIGHT_START,
@@ -216,7 +218,12 @@ class _HouseSteps:
         return await self.async_step_outside()
 
     async def async_step_hot_water(self, user_input: dict[str, Any] | None = None):
+        errors: dict[str, str] = {}
         if user_input is not None:
+            hw = user_input.get(CONF_HW_CALLING)
+            if hw and hw in (self._data.get(CONF_BOILER_ON), self._data.get(CONF_BOILER)):
+                errors[CONF_HW_CALLING] = "same_as_boiler"
+        if user_input is not None and not errors:
             self._keep(user_input, [CONF_HW_CALLING])
             self._data[CONF_HW_PRIORITY] = bool(user_input.get(CONF_HW_PRIORITY, True))
             if self._type == TYPE_HYBRID:
@@ -229,7 +236,7 @@ class _HouseSteps:
             fields.update(_select(CONF_HW_SYSTEM, HW_SYSTEMS, HW_TANK if hw in (HW_S_PLAN, HW_Y_PLAN) else hw, list_mode=True))
         fields[_opt(CONF_HW_CALLING, d)] = _ent(["binary_sensor", "switch", "input_boolean"])
         fields[vol.Optional(CONF_HW_PRIORITY, default=d.get(CONF_HW_PRIORITY, True))] = sel.BooleanSelector()
-        return self.async_show_form(step_id="hot_water", data_schema=vol.Schema(fields))
+        return self.async_show_form(step_id="hot_water", data_schema=vol.Schema(fields), errors=errors)
 
     async def async_step_outside(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
@@ -337,6 +344,7 @@ class SmartHeatingConfigFlow(_HouseSteps, ConfigFlow, domain=DOMAIN):
 
     async def async_step_rooms(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
+            self._data[CONF_START_MODE] = user_input.get(CONF_START_MODE, START_HEAT)
             subs = []
             for area_id in user_input.get("areas", []):
                 name = area_tools.area_name(self.hass, area_id) or area_id
@@ -350,6 +358,7 @@ class SmartHeatingConfigFlow(_HouseSteps, ConfigFlow, domain=DOMAIN):
             step_id="rooms",
             data_schema=vol.Schema({
                 vol.Optional("areas", default=candidates): sel.AreaSelector(sel.AreaSelectorConfig(multiple=True)),
+                **_select(CONF_START_MODE, START_MODES, START_HEAT, list_mode=True),
             }),
             description_placeholders={"count": str(len(candidates))},
         )
@@ -368,12 +377,14 @@ class SmartHeatingConfigFlow(_HouseSteps, ConfigFlow, domain=DOMAIN):
 class SmartHeatingOptionsFlow(OptionsFlow):
     """Configure: short, separate pages instead of one long form."""
 
+    _relearn: list[str] = []
+
     @property
     def _type(self) -> str:
         return _legacy_type(dict(self.config_entry.data))
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        return self.async_show_menu(step_id="init", menu_options=["temperatures", "prices", "import_areas", "advanced"])
+        return self.async_show_menu(step_id="init", menu_options=["temperatures", "prices", "import_areas", "relearn", "advanced"])
 
     def _save(self, user_input: dict[str, Any]) -> ConfigFlowResult:
         return self.async_create_entry(data={**self.config_entry.options, **user_input})
@@ -407,6 +418,36 @@ class SmartHeatingOptionsFlow(OptionsFlow):
             fields[vol.Required(OPT_ELEC_PRICE, default=self._v(OPT_ELEC_PRICE, DEFAULT_ELEC_PRICE))] = _num(0, 2, 0.001, "£/kWh")
         return self.async_show_form(step_id="prices", data_schema=vol.Schema(fields))
 
+    async def async_step_relearn(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Pick rooms whose learned data should be cleared (asked again before anything happens)."""
+        c = getattr(self.config_entry, "runtime_data", None)
+        if c is None:
+            return self.async_abort(reason="not_loaded")
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            self._relearn = [rid for rid in user_input.get("rooms", []) if rid in c.rooms]
+            if self._relearn:
+                return await self.async_step_relearn_confirm()
+            errors["rooms"] = "no_rooms"
+        options = [sel.SelectOptionDict(value=rid, label=r.cfg.name) for rid, r in sorted(c.rooms.items(), key=lambda kv: kv[1].cfg.name)]
+        return self.async_show_form(
+            step_id="relearn",
+            data_schema=vol.Schema({
+                vol.Required("rooms"): sel.SelectSelector(sel.SelectSelectorConfig(
+                    options=options, multiple=True, mode=sel.SelectSelectorMode.LIST)),
+            }),
+            errors=errors,
+        )
+
+    async def async_step_relearn_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        c = self.config_entry.runtime_data
+        names = ", ".join(c.rooms[rid].cfg.name for rid in self._relearn)
+        if user_input is not None:
+            await c.async_relearn(self._relearn)
+            return self.async_abort(reason="relearned", description_placeholders={"rooms": names})
+        return self.async_show_form(step_id="relearn_confirm", data_schema=vol.Schema({}),
+                                    description_placeholders={"rooms": names})
+
     async def async_step_advanced(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
             return self._save(user_input)
@@ -426,7 +467,6 @@ class SmartHeatingOptionsFlow(OptionsFlow):
         if self._type in (TYPE_TANK, TYPE_HYBRID):
             fields[vol.Required("hw_max_pause_min", default=v("hw_max_pause_min", d.hw_max_pause_min))] = _num(0, 120, 5, "min")
         fields[vol.Optional(OPT_NOTIFY, description={"suggested_value": v(OPT_NOTIFY, None)})] = sel.TextSelector()
-        fields[vol.Required(OPT_SKIP_CAL, default=v(OPT_SKIP_CAL, False))] = sel.BooleanSelector()
         return self.async_show_form(step_id="advanced", data_schema=vol.Schema(fields))
 
     async def async_step_import_areas(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

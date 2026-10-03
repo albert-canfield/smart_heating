@@ -45,7 +45,7 @@ from homeassistant.config_entries import ConfigEntries  # noqa: E402
 from homeassistant.helpers import config_validation as cv  # noqa: E402
 from homeassistant.helpers import device_registry as dr, entity_registry as er, area_registry as ar  # noqa: E402
 import custom_components.smart_heating.coordinator as _coord  # noqa: E402
-from custom_components.smart_heating.config_flow import SmartHeatingConfigFlow, RoomSubentryFlow  # noqa: E402
+from custom_components.smart_heating.config_flow import SmartHeatingConfigFlow, SmartHeatingOptionsFlow, RoomSubentryFlow  # noqa: E402
 
 _coord.TRV_STAGGER_S = 0
 
@@ -115,7 +115,7 @@ async def main() -> None:
     r = ser(await flow.async_step_extras({}))
     assert r["step_id"] == "rooms", r
     r = await flow.async_step_rooms({"areas": [area.id]})
-    assert r["type"] == "create_entry", r
+    assert r["type"] == "create_entry" and r["data"]["start_mode"] == "heat_now", r
     room = r["subentries"][0]["data"]
     print("wizard (electric):", r["data"], "| room:", room)
     assert set(room["heaters"]) == {"switch.cafe_heater", "climate.cafe_panel"} and "trvs" not in room
@@ -127,10 +127,12 @@ async def main() -> None:
     await f2.async_step_user()
     r = ser(await f2.async_step_type({"heating_type": "boiler_tank"}))
     assert r["step_id"] == "boiler"
-    r = ser(await f2.async_step_boiler({"boiler_switch": "climate.nest"}))
+    r = ser(await f2.async_step_boiler({"boiler_switch": "climate.nest", "boiler_on_sensor": "binary_sensor.boiler_on"}))
     assert r["step_id"] == "thermostat"
     r = ser(await f2.async_step_thermostat({"thermostat_style": "setpoint"}))
     assert r["step_id"] == "hot_water"
+    r = ser(await f2.async_step_hot_water({"hw_calling": "binary_sensor.boiler_on", "hot_water_priority": True}))
+    assert r["step_id"] == "hot_water" and r["errors"] == {"hw_calling": "same_as_boiler"}, r
     r = ser(await f2.async_step_hot_water({"hot_water_priority": True}))
     assert r["step_id"] == "outside"
     r = ser(await f2.async_step_outside({"weather": "weather.home"}))
@@ -141,7 +143,8 @@ async def main() -> None:
     assert r["step_id"] == "energy_meter", r
     r = ser(await f2.async_step_energy_meter({"gas_meter": "sensor.gas_kwh", "gas_rate": "sensor.gas_rate", "gas_price": 0.07}))
     assert r["step_id"] == "rooms", r
-    r = await f2.async_step_rooms({"areas": []})
+    r = await f2.async_step_rooms({"areas": [], "start_mode": "watch_first"})
+    assert r["data"]["start_mode"] == "watch_first", r["data"]
     assert r["type"] == "create_entry" and r["data"]["energy_source"] == "smart_meter" and r["data"]["gas_rate"] == "sensor.gas_rate", r
     assert r["options"] == {"gas_price": 0.07}, r["options"]
     f3 = SmartHeatingConfigFlow()
@@ -224,6 +227,25 @@ async def main() -> None:
     keys = [str(k) for k in r["data_schema"].schema]
     assert "heaters" in keys and "trvs" not in keys, keys
     print("room form keys:", keys)
+
+    # Configure > Relearn rooms: pick, confirm, cleared.
+    entry.runtime_data = c
+    hass.config_entries._entries[entry.entry_id] = entry
+    c.rooms["cafe"].model.heat_n = 4
+    of = SmartHeatingOptionsFlow()
+    of.hass, of.handler, of.flow_id, of.context = hass, entry.entry_id, "o1", {"source": "user"}
+    r = ser(await of.async_step_init())
+    assert "relearn" in r["menu_options"], r
+    r = ser(await of.async_step_relearn())
+    assert r["step_id"] == "relearn", r
+    r = ser(await of.async_step_relearn({"rooms": []}))
+    assert r["errors"] == {"rooms": "no_rooms"}, r
+    r = ser(await of.async_step_relearn({"rooms": ["cafe"]}))
+    assert r["step_id"] == "relearn_confirm" and r["description_placeholders"] == {"rooms": "Cafe"}, r
+    assert c.rooms["cafe"].model.heat_n == 4, "nothing cleared before confirming"
+    r = await of.async_step_relearn_confirm({})
+    assert r["type"] == "abort" and r["reason"] == "relearned" and c.rooms["cafe"].model.heat_n == 0, r
+    print("relearn rooms (options) ok")
 
     await c.async_stop(); await hass.async_stop()
     print("ELECTRIC OK")

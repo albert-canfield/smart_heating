@@ -10,9 +10,10 @@ from homeassistant.config_entries import ConfigEntry
 import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN, PLATFORMS, SERVICE_HEAT_TEST, SERVICE_START_CONTROL, VERSION
+from .const import DOMAIN, PLATFORMS, SERVICE_HEAT_TEST, SERVICE_RELEARN, SERVICE_START_CONTROL, VERSION
 from .coordinator import HeatingCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,10 +52,21 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
     async def start_control(call: ServiceCall) -> None:
         for c in _coordinators(hass):
-            await c.async_start_control(call.data.get("skip_calibration", False))
+            await c.async_start_control()
+
+    async def relearn(call: ServiceCall) -> None:
+        wanted = {n.strip().lower() for n in call.data["rooms"]}
+        for c in _coordinators(hass):
+            ids = [rid for rid, r in c.rooms.items() if r.cfg.name.lower() in wanted]
+            if len(ids) < len(wanted):
+                known = ", ".join(sorted(r.cfg.name for r in c.rooms.values()))
+                raise HomeAssistantError(f"Unknown room name. Rooms: {known}")
+            await c.async_relearn(ids)
 
     hass.services.async_register(DOMAIN, SERVICE_HEAT_TEST, heat_test, vol.Schema({vol.Optional("start", default=True): cv.boolean, vol.Optional("ignore_automations", default=False): cv.boolean}))
-    hass.services.async_register(DOMAIN, SERVICE_START_CONTROL, start_control, vol.Schema({vol.Optional("skip_calibration", default=False): cv.boolean}))
+    # skip_calibration is accepted for old automations; control no longer waits for calibration.
+    hass.services.async_register(DOMAIN, SERVICE_START_CONTROL, start_control, vol.Schema({vol.Optional("skip_calibration"): cv.boolean}))
+    hass.services.async_register(DOMAIN, SERVICE_RELEARN, relearn, vol.Schema({vol.Required("rooms"): vol.All(cv.ensure_list, [cv.string])}))
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: SmartHeatingConfigEntry) -> bool:

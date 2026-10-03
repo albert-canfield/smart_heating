@@ -119,15 +119,8 @@ async def main() -> None:
     print("house", c.house_temp, "floors", c.floor_temps, "outdoor mean", c.outdoor_mean, "fmin", c.forecast_min_24h)
     assert p.boiler_on and "living" in p.open_rooms and calls == [], calls
 
-    # Control is locked until calibrated.
-    try:
-        await c.async_set_monitor_only(False)
-        raise SystemExit("expected calibration lock")
-    except Exception as err:  # noqa: BLE001
-        print("lock ok:", str(err)[:60], "...")
-
-    # Skip calibration and let it act.
-    c.skip_calibration = True
+    # No calibration lock: heating starts while learning carries on in the background.
+    assert not c.calibrated
     await c.async_set_monitor_only(False)
     await c.async_refresh()
     for _ in range(40):
@@ -169,7 +162,6 @@ async def main() -> None:
     # One Cycle ends itself when nothing needs heat.
     hass.states.async_set("sensor.living_t", "19.5")
     c.mode = Mode.ONE_CYCLE
-    c.skip_calibration = False
     c.monitor_only = True
     await c.async_refresh()
     print("one cycle ->", c.mode.value, "|", c.data.reason)
@@ -253,6 +245,26 @@ async def main() -> None:
     for r in c.rooms.values():
         r.model.heat_n = 0
 
+    # A radiator without a smart valve can only be stopped with the boiler: the test ends at 21.5°.
+    hass.states.async_set("sensor.living_t", "19.0")
+    hass.states.async_set("sensor.bed_t", "19.5")
+    boiler_rested()
+    await c.async_heat_test(True)
+    await hass.async_block_till_done()
+    hass.states.async_set("sensor.hall_t", "21.6")
+    await tick()
+    recent = [e["message"] for e in list(c.log)[:5]]
+    print("unvalved room ->", next((m for m in recent if "Hall reached" in m), recent)[:100])
+    assert c.heat_test is None and any("Hall reached 21.6" in m for m in recent), recent
+    hass.states.async_set("sensor.hall_t", "21.3")
+    boiler_rested()
+    try:
+        await c.async_heat_test(True)
+        raise SystemExit("expected: unvalved room too warm to start")
+    except HomeAssistantError as err:
+        assert "Hall" in str(err)
+    hass.states.async_set("sensor.hall_t", "18.2")
+
     # Something else switches the boiler off during a heat test: back off and stop the test, never fight.
     hass.states.async_set("sensor.bed_t", "19.5")
     object.__setattr__(hass.states.get("switch.heating"), "last_changed", dt_util.utcnow() - timedelta(minutes=30))
@@ -286,15 +298,44 @@ async def main() -> None:
     info = c.calibration_info
     print("heat test ok | calibration info:", {k: info[k] for k in ("rooms_needed", "cooling_hours_left", "eta_hours")})
 
-    # Start control before calibration needs explicit skip.
-    c.skip_calibration = False
-    try:
-        await c.async_start_control()
-        raise SystemExit("expected lock")
-    except Exception as err:  # noqa: BLE001
-        assert "Calibration" in str(err)
-    await c.async_start_control(skip_calibration=True)
-    assert not c.monitor_only and c.calibrated and c.force_start
+    # Start heating before learning finishes: no lock, no skip needed.
+    await c.async_set_monitor_only(True)
+    await c.async_start_control()
+    assert not c.monitor_only and not c.calibrated
+
+    # Relearn clears a room's learned data.
+    c.rooms["bed"].model.heat_n = 5
+    await c.async_relearn(["bed"])
+    assert c.rooms["bed"].model.heat_n == 0 and c.rooms["bed"].model.free.n == 0
+    assert any(e["message"].startswith("Relearning") and e["room"] == "Bedroom" for e in list(c.log)[:5])
+
+    # Repairs: a hot water signal that is the boiler's own sensor is ignored and flagged.
+    from homeassistant.helpers import issue_registry as ir
+    c.house_cfg["hw_calling"] = "switch.heating"
+    c._check_setup()
+    assert c.hw_entity is None and ir.async_get(hass).async_get_issue("smart_heating", "hw_same_as_boiler")
+    c.house_cfg.pop("hw_calling")
+    c._check_setup()
+    assert ir.async_get(hass).async_get_issue("smart_heating", "hw_same_as_boiler") is None
+
+    # Repairs: heating called but the boiler running sensor stays off for 20 min.
+    c.house_cfg["boiler_on_sensor"] = "binary_sensor.burner"
+    hass.states.async_set("binary_sensor.burner", "off")
+    hass.states.async_set("switch.heating", "on")
+    t0 = dt_util.utcnow()
+    c._check_boiler_response(t0)
+    c._check_boiler_response(t0 + timedelta(minutes=19))
+    assert ir.async_get(hass).async_get_issue("smart_heating", "boiler_sensor_silent") is None
+    c._check_boiler_response(t0 + timedelta(minutes=21))
+    assert ir.async_get(hass).async_get_issue("smart_heating", "boiler_sensor_silent")
+    hass.states.async_set("binary_sensor.burner", "on")
+    c._check_boiler_response(t0 + timedelta(minutes=22))
+    assert ir.async_get(hass).async_get_issue("smart_heating", "boiler_sensor_silent") is None
+    c.house_cfg.pop("boiler_on_sensor")
+
+    # Log: a changing trend in a reason is not news.
+    assert _coord._NUMBERS.sub("#", "coasting +0.31/h") == _coord._NUMBERS.sub("#", "coasting +0.46/h")
+    print("start, relearn, repairs, log key ok")
 
     # Every platform's entities build and report without errors.
     import importlib
@@ -314,7 +355,11 @@ async def main() -> None:
     cal = next(e for e in ents if getattr(e, "_kind", None) == "calibration")
     print("calibration attrs:", {k: v for k, v in cal.extra_state_attributes.items() if k != "rooms"})
 
+    # The log survives a restart.
     await c.async_stop()
+    c2 = HeatingCoordinator(hass, entry)
+    await c2._load()
+    assert any(e["message"].startswith("Relearning") for e in c2.log), "log kept across restarts"
     await hass.async_stop()
     print("SMOKE OK")
 

@@ -55,7 +55,7 @@ function indicators(d) {
   if (d.hotWater === true) add("water", "water", "Hot water heating");
   if (d.away) add("away", "away", "Away: frost protection only");
   if (d.night) add("moon", "night", "Night settings");
-  if (d.monitor) add("eye", "watch", d.calibrated ? "Watching only: not controlling yet" : "Calibrating: watching only");
+  if (d.monitor) add("eye", "watch", "Watching only: not controlling yet");
   return out.length ? `<span class="inds">${out.join("")}</span>` : "";
 }
 
@@ -105,7 +105,7 @@ class SmartHeatingCard extends HTMLElement {
     this._tip = null;
     this._pending = {};
     this._timers = {};
-    this._confirmSkip = false;
+    this._confirmStart = false;
   }
 
   static getConfigForm() {
@@ -357,15 +357,23 @@ class SmartHeatingCard extends HTMLElement {
 
   _badge(d) {
     if (d.heatTest != null) return `<button class="badge test" data-cal>${ICON_FLAME}Heat test ${fmtMin(d.heatTest)}</button>`;
-    if (!d.calibrated) return `<button class="badge cal" data-cal aria-expanded="${this._calOpen}" title="${esc(d.calPhase ? `Now: ${d.calPhase}` : "Learning how your house holds heat")}">${SPIN}Calibrating ${d.calPct ?? 0}%<span class="chev2 ${this._calOpen ? "up" : ""}">${CHEV}</span></button>`;
+    if (!d.calibrated) return `<button class="badge cal" data-cal aria-expanded="${this._calOpen}" title="${esc(d.calPhase ? `Now: ${d.calPhase}` : "Learning how your house holds heat")}">Learning ${d.calPct ?? 0}%<span class="chev2 ${this._calOpen ? "up" : ""}">${CHEV}</span></button>`;
     return "";
   }
 
   _ready(d) {
-    if (!d.monitor || d.heatTest != null || !d.calibrated) return "";
-    const text = d.calAvailable ? "Calibration done. Ready to take over." : "Watching only.";
-    return `<div class="ready"><span>${d.calAvailable ? ICON_CHECK : ""}${text}</span>
-      <button class="primary" data-start>Start control</button></div>`;
+    if (!d.monitor || d.heatTest != null) return "";
+    if (this._confirmStart) {
+      const others = d.cal.competing_automations || [];
+      return `<div class="ready confirm" role="alertdialog" aria-label="Start heating">
+        <span>Start heating now? Smart Heating will switch the boiler and TRVs.${others.length
+          ? ` Turn these automations off first, they also switch the heating: <b>${esc(others.join(", "))}</b>.` : ""}</span>
+        <span class="actions"><button class="primary" data-confirm="start">Start heating</button><button data-confirm="cancel">Cancel</button></span>
+      </div>`;
+    }
+    const learned = d.calibrated && d.calAvailable;
+    return `<div class="ready"><span>${learned ? ICON_CHECK : ""}${learned ? "Learning done. Watching only." : "Watching only: decisions are logged, nothing is switched."}</span>
+      <button class="primary" data-start>Start heating</button></div>`;
   }
 
   _calPanel(d) {
@@ -410,9 +418,9 @@ class SmartHeatingCard extends HTMLElement {
         ${row("heat", "Heating data", c.heating_hours ?? 0, c.heating_hours_needed ?? 2, " h",
           "Counted while the boiler runs with the room's radiator open. The heat test fills this in one go.")}
         <p class="now">Now: ${esc(d.calPhase || "starting")}</p>
-        <p class="muted">Until then Smart Heating only watches and logs. Keep your heating as it is; you'll get a notification when it's ready.</p>
+        <p class="muted">${d.monitor ? "Watching only until you tap Start heating. Learning carries on either way."
+          : "Heating runs as usual. Predictions and insulation grades appear room by room as they are learned."}</p>
         ${test}
-        <button class="link" data-skip>${this._confirmSkip ? "Tap again to start now with default settings" : "Start now without calibration"}</button>
       </div>`;
   }
 
@@ -571,7 +579,6 @@ class SmartHeatingCard extends HTMLElement {
     root.querySelector("[data-cal]")?.addEventListener("click", (e) => {
       e.stopPropagation();
       this._calOpen = !this._calOpen;
-      this._confirmSkip = false;
       this._render();
     });
     root.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", () => {
@@ -580,16 +587,18 @@ class SmartHeatingCard extends HTMLElement {
       this._call("smart_heating", "heat_test", t === "stop" ? { start: false } : { start: true, ignore_automations: t === "force" });
     }));
     root.querySelector("[data-start]")?.addEventListener("click", () => {
-      this._error = null;
-      this._call("smart_heating", "start_control", {});
+      this._confirmStart = true;  // ask first; cancels itself after 10 s
+      clearTimeout(this._confirmTimer);
+      this._confirmTimer = setTimeout(() => { this._confirmStart = false; this._render(); }, 10000);
+      this._render();
     });
-    root.querySelector("[data-skip]")?.addEventListener("click", () => {
-      if (!this._confirmSkip) { this._confirmSkip = true; this._render(); return; }
-      this._confirmSkip = false;
-      this._calOpen = false;
+    root.querySelectorAll("[data-confirm]").forEach((b) => b.addEventListener("click", () => {
+      clearTimeout(this._confirmTimer);
+      this._confirmStart = false;
       this._error = null;
-      this._call("smart_heating", "start_control", { skip_calibration: true });
-    });
+      if (b.dataset.confirm === "start") this._call("smart_heating", "start_control", {});
+      this._render();
+    }));
     root.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => this._setMode(b.dataset.mode)));
     root.querySelectorAll("[data-more]").forEach((el) => {
       const open = (e) => {
@@ -1036,6 +1045,9 @@ const STYLE = `<style>
            border-radius: 10px; font-size: .8125rem; color: var(--primary-text-color);
            background: color-mix(in srgb, #2e8b57 14%, var(--card-background-color, #fff)); }
   .ready span { display: flex; align-items: center; gap: 6px; }
+  .ready.confirm { flex-wrap: wrap; background: color-mix(in srgb, #e0a020 18%, var(--card-background-color, #fff)); }
+  .ready.confirm > span:first-child { display: block; flex: 1 1 220px; }
+  .ready .actions { gap: 8px; }
   .err { margin: 8px 0 0; font-size: .75rem; color: var(--sh-fault); }
   .summary { -webkit-tap-highlight-color: transparent; }
 

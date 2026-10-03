@@ -123,7 +123,7 @@ def make_plan(
     status, reason = ("heating", f"{len(approved)} room(s) approved") if want_on else ("idle", "no approved demand")
 
     if not boiler_control:
-        plan = _valve_only(rooms, approved, decisions, house, want_on, status, reason)
+        plan = _valve_only(rooms, approved, decisions, house, want_on, status, reason, s)
         return _heaters(rooms, plan, heater_ids, house)
 
     # Hot water priority (never blocks safety).
@@ -150,9 +150,7 @@ def make_plan(
             if (
                 cfg.room_id not in open_ids
                 and d.verdict is Verdict.IDLE
-                and snap.temp is not None
-                and d.need.target is not None
-                and snap.temp < d.need.target
+                and _tops_up(snap, d.need.target, s)
                 and house.mode is not Mode.OFF
             ):
                 open_ids.add(cfg.room_id)
@@ -186,7 +184,7 @@ def _heaters(rooms, plan: Plan, heater_ids: set[str], house: HouseSnapshot) -> P
     return plan
 
 
-def _valve_only(rooms, approved, decisions, house: HouseSnapshot, want_on: bool, status: str, reason: str) -> Plan:
+def _valve_only(rooms, approved, decisions, house: HouseSnapshot, want_on: bool, status: str, reason: str, s: Settings) -> Plan:
     any_safety = any(decisions[c.room_id].need.level is Level.SAFETY for c, _ in approved)
     if house.mode is Mode.OFF and not any_safety:
         approved, want_on, status, reason = [], False, "off", "mode off"
@@ -195,10 +193,7 @@ def _valve_only(rooms, approved, decisions, house: HouseSnapshot, want_on: bool,
         # Known to be firing anyway: let near-target rooms top up.
         for cfg, snap in rooms:
             d = decisions[cfg.room_id]
-            if (
-                cfg.room_id not in open_ids and d.verdict is Verdict.IDLE and snap.temp is not None
-                and d.need.target is not None and snap.temp < d.need.target
-            ):
+            if cfg.room_id not in open_ids and d.verdict is Verdict.IDLE and _tops_up(snap, d.need.target, s):
                 open_ids.add(cfg.room_id)
                 decisions[cfg.room_id] = RoomDecision(cfg.room_id, d.need, Verdict.PIGGYBACK, "topping up while boiler runs")
     for cfg, snap in rooms:
@@ -208,6 +203,17 @@ def _valve_only(rooms, approved, decisions, house: HouseSnapshot, want_on: bool,
         if snap.valve_open is None or snap.valve_open != should_open:
             decisions[cfg.room_id].open_valve = should_open
     return Plan(want_on, decisions, status, reason)
+
+
+def _tops_up(snap: RoomSnapshot, target: float | None, s: Settings) -> bool:
+    """Top up while the boiler runs anyway. Starts half the hysteresis below target and, once the
+    valve is open, carries on to target + overshoot, so a room sitting at its target doesn't open
+    and close its valve every minute."""
+    if snap.temp is None or target is None:
+        return False
+    if snap.valve_open:
+        return snap.temp < target + s.overshoot
+    return snap.temp < target - s.hysteresis / 2
 
 
 def _coasting(snap: RoomSnapshot, deficit: float, s: Settings) -> bool:

@@ -8,6 +8,10 @@ x = Tin - Tout over free-running intervals gives slope -k and intercept k*G.
 
 Warm-up rate is the mean rise (degC/h) over intervals with the boiler running
 and the room's radiator open.
+
+Over a night or two, Tin - Tout barely varies, so the slope alone is poorly
+determined. A prior anchors the line at a typical free-heat lift (the room stops
+cooling PRIOR_GAIN above outside) and fades out as real variety builds up.
 """
 from __future__ import annotations
 
@@ -28,6 +32,9 @@ FREE_NEEDED = 96  # 24 h of free-running samples
 FREE_SPREAD_NEEDED = 2.0  # degC range of (Tin - Tout) seen
 HEAT_NEEDED = 8  # 2 h of heating samples
 TAU_RANGE = (5.0, 400.0)  # plausible hours
+PRIOR_GAIN = 1.5  # degC: typical free-heat lift (people, sun, neighbouring rooms)
+PRIOR_WEIGHT = 8.0  # samples' worth while the data barely varies
+PRIOR_FADE = 6.0  # degC of (Tin - Tout) variety at which the prior has faded out
 
 
 @dataclass
@@ -49,12 +56,17 @@ class Fit:
         self.xmin = min(self.xmin, x)
         self.xmax = max(self.xmax, x)
 
-    def line(self) -> tuple[float, float] | None:
-        den = self.n * self.sxx - self.sx**2
-        if self.n < 3 or den <= 1e-9:
+    def line(self, prior: tuple[float, float] | None = None) -> tuple[float, float] | None:
+        """Least-squares slope and intercept; `prior` = (x, weight) adds that many points at (x, 0)."""
+        if self.n < 3:
             return None
-        slope = (self.n * self.sxy - self.sx * self.sy) / den
-        return slope, (self.sy - slope * self.sx) / self.n
+        x0, w = prior if prior else (0.0, 0.0)
+        n, sx, sxx = self.n + w, self.sx + w * x0, self.sxx + w * x0 * x0
+        den = n * sxx - sx**2
+        if den <= 1e-9:
+            return None
+        slope = (n * self.sxy - sx * self.sy) / den
+        return slope, (self.sy - slope * sx) / n
 
     @property
     def spread(self) -> float:
@@ -120,8 +132,12 @@ class RoomModel:
     # ---------- results ----------
 
     @property
+    def _prior(self) -> tuple[float, float]:
+        return PRIOR_GAIN, PRIOR_WEIGHT * max(0.0, 1.0 - self.free.spread / PRIOR_FADE)
+
+    @property
     def k(self) -> float | None:
-        line = self.free.line()
+        line = self.free.line(self._prior)
         if not line or line[0] >= 0:
             return None
         k = -line[0]
@@ -134,7 +150,7 @@ class RoomModel:
 
     @property
     def gain(self) -> float | None:
-        line, k = self.free.line(), self.k
+        line, k = self.free.line(self._prior), self.k
         return round(line[1] / k, 2) if line and k else None
 
     @property
@@ -225,7 +241,7 @@ def overall_progress(models: list[RoomModel]) -> float:
 
 
 def calibration_summary(models: list[RoomModel], share: float, free_share: float = 0.75) -> dict:
-    """What the house still needs before control unlocks.
+    """What the house still needs before learning is complete.
 
     Looks at the rooms closest to done (as many as `share` requires) and reports
     the worst of them, so the numbers shrink to zero exactly when calibration ends.
