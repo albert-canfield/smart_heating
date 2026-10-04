@@ -113,8 +113,13 @@ async def main() -> None:
     r = ser(await flow.async_step_outside({"weather": "weather.home"}))
     assert r["step_id"] == "extras" and "gas_meter" not in str(r["data_schema"].schema), r
     r = ser(await flow.async_step_extras({}))
+    assert r["step_id"] == "electricity", r
+    r = ser(await flow.async_step_electricity({"electricity_source": "estimate"}))
+    assert r["step_id"] == "electricity_estimate", r
+    r = ser(await flow.async_step_electricity_estimate({"electricity_price": 0.24}))
     assert r["step_id"] == "rooms", r
     r = await flow.async_step_rooms({"areas": [area.id]})
+    assert r["options"] == {"electricity_price": 0.24}, r["options"]
     assert r["type"] == "create_entry" and r["data"]["start_mode"] == "heat_now", r
     room = r["subentries"][0]["data"]
     print("wizard (electric):", r["data"], "| room:", room)
@@ -163,16 +168,39 @@ async def main() -> None:
     r = await f3.async_step_rooms({"areas": []})
     assert r["data"]["energy_source"] == "estimate" and "gas_meter" not in r["data"], r["data"]
     assert r["options"] == {"boiler_input_kw": 15, "gas_price": 0.06}, r["options"]
-    print("wizard (tank + thermostat + smart meter, combi + estimate): steps ok")
+    # Hybrid: gas questions, then electricity (smart meter with live power).
+    f4 = SmartHeatingConfigFlow()
+    f4.hass, f4.handler, f4.flow_id, f4.context = hass, "smart_heating", "f4", {"source": "user"}
+    await f4.async_step_user()
+    await f4.async_step_type({"heating_type": "hybrid"})
+    await f4.async_step_boiler({"boiler_switch": "switch.x"})
+    await f4.async_step_hot_water({"hot_water_system": "tank"})
+    await f4.async_step_outside({})
+    await f4.async_step_extras({})
+    await f4.async_step_energy({"energy_source": "estimate"})
+    r = ser(await f4.async_step_energy_estimate({"boiler_input_kw": 15, "gas_price": 0.06}))
+    assert r["step_id"] == "electricity", r
+    await f4.async_step_electricity({"electricity_source": "smart_meter"})
+    r = ser(await f4.async_step_electricity_meter({"electricity_meter": "sensor.elec_total", "electricity_power": "sensor.house_power",
+                                                   "electricity_price": 0.25}))
+    assert r["step_id"] == "rooms", r
+    r = await f4.async_step_rooms({"areas": []})
+    assert r["data"]["electricity_meter"] == "sensor.elec_total" and r["data"]["electricity_power"] == "sensor.house_power", r["data"]
+    assert r["options"] == {"boiler_input_kw": 15, "gas_price": 0.06, "electricity_price": 0.25}, r["options"]
+    print("wizard (tank + thermostat + smart meter, combi + estimate, hybrid + both): steps ok")
 
     # Run the electric coordinator.
     entry = ConfigEntry(
-        version=1, minor_version=1, domain="smart_heating", title="Smart Heating", data=r_data if (r_data := {"heating_type": "electric", "weather": "weather.home", "outdoor_temperature": "sensor.out"}) else {},
+        version=1, minor_version=1, domain="smart_heating", title="Smart Heating", data=r_data if (r_data := {"heating_type": "electric", "weather": "weather.home", "outdoor_temperature": "sensor.out",
+                                                                                             "electricity_source": "smart_meter", "electricity_meter": "sensor.elec_total",
+                                                                                             "electricity_power": "sensor.house_power"}) else {},
         options={}, source="user", unique_id="smart_heating", discovery_keys={},
         subentries_data=[ConfigSubentryData(subentry_id="cafe", subentry_type="room", title="Cafe",
                                             data={**room, "heater_power_w": 2000, "heater_eco_power_w": 1000}, unique_id=area.id)],
     )
     hass.states.async_set("sensor.out", "6.0")
+    hass.states.async_set("sensor.elec_total", "5.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.house_power", "600", {"unit_of_measurement": "W"})
     c = HeatingCoordinator(hass, entry)
     c.async_config_entry_first_refresh = c.async_refresh
     c.skip_calibration = True
@@ -197,6 +225,33 @@ async def main() -> None:
     c._account_electric(dt_util.utcnow())
     print("kWh after 10 min:", c.elec_kwh, "| cost:", c.elec_cost)
     assert abs(c.elec_kwh - 2800 * (10 / 60) / 1000) < 0.01
+
+    # Live house power: a heater switching alone shows its real draw (here a panel in eco at 950 W).
+    n0 = len(c._power_hist)
+    hass.states.async_set("sensor.house_power", "640", {"unit_of_measurement": "W"})
+    await hass.async_block_till_done()
+    assert len(c._power_hist) == n0 + 1, "live power is listened to"
+    t0 = dt_util.utcnow()
+    c._power_hist.clear(); c._heater_changes.clear()
+    c._power_hist.extend([(t0 - timedelta(seconds=10), 600.0), (t0 + timedelta(seconds=40), 1550.0)])
+    c._check_step(c.rooms["cafe"], "climate.cafe_panel", "eco", True, t0, t0)
+    print("learned from live power:", c.step_kw, "| panel draw now", c._heater_kw(c.rooms["cafe"], "climate.cafe_panel", "eco"))
+    assert c.step_kw == {"climate.cafe_panel:eco": 0.95} and c._heater_kw(c.rooms["cafe"], "climate.cafe_panel", "eco") == 0.95
+    # Day change: yesterday's electricity meter is shared between the heaters and the rest of the house.
+    c.elec_day = (dt_util.as_local(dt_util.utcnow()).date() - timedelta(days=1)).isoformat()
+    c.elec_hours, c.elec_known, c.elec_meter = {"climate.cafe_panel:eco": 3.0}, 2.0, (100.0, 112.0, 0.0)
+    c._account_electric(dt_util.utcnow())
+    print("electricity yesterday:", c.elec_yesterday)
+    assert c.elec_days[-1].total == 12.0 and c.elec_yesterday["heating_kwh"] == 4.85 and c.elec_yesterday["other_kwh"] == 7.15
+    assert sum(c.elec_hours.values()) < 0.01 and c.elec_meter[0] == 5.0, (c.elec_hours, c.elec_meter)  # a fresh day
+    # No smart meter: rated (or eco) watts x on time, no house or other figures.
+    c.house_cfg["electricity_source"] = "estimate"
+    c.step_kw.clear()
+    c._refit_elec()
+    c._account_electric(dt_util.utcnow())
+    print("no meter: panel eco", c._heater_kw(c.rooms["cafe"], "climate.cafe_panel", "eco"), "| house", c.elec_house_kwh)
+    assert c._heater_kw(c.rooms["cafe"], "climate.cafe_panel", "eco") == 1.0 and c.elec_house_kwh is None
+    c.house_cfg["electricity_source"] = "smart_meter"
 
     # Warm: heaters off.
     hass.states.async_set("sensor.cafe_temperature", "19.6")

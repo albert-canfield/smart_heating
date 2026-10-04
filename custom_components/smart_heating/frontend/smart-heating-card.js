@@ -109,6 +109,7 @@ class SmartHeatingCard extends HTMLElement {
     this._expanded = false;
     this._calOpen = false;
     this._tip = null;
+    this._energyOpen = false;
     this._pending = {};
     this._timers = {};
     this._confirmStart = false;
@@ -181,6 +182,9 @@ class SmartHeatingCard extends HTMLElement {
           else if (s.attributes.kind === "gas_cost_today") house.cost = s;
           else if (s.attributes.kind === "electric_today") house.elec = s;
           else if (s.attributes.kind === "electric_cost_today") house.elecCost = s;
+          else if (s.attributes.kind === "hot_water_gas_today") house.hwGas = s;
+          else if (s.attributes.kind === "other_gas_today") house.otherGas = s;
+          else if (s.attributes.kind === "other_electricity_today") house.otherElec = s;
           else if (s.attributes.kind === "decision_log") house.log = s;
           else if (s.attributes.kind === "heat_retention" && s.attributes.scope === "house") house.retention = s;
           else if (s.attributes.kind === "floor_temperature") (house.floors = house.floors || {})[s.attributes.floor] = s;
@@ -277,8 +281,20 @@ class SmartHeatingCard extends HTMLElement {
       elecEntity: house.elec?.entity_id,
       elecCost: num(house.elecCost?.state),
       elecCostEntity: house.elecCost?.entity_id,
+      hwGas: num(house.hwGas?.state),
+      hwGasEntity: house.hwGas?.entity_id,
+      hwGasCost: house.hwGas?.attributes.cost,
+      hwHours: house.hwGas?.attributes.hot_water_hours,
+      otherGas: num(house.otherGas?.state),
+      otherGasEntity: house.otherGas?.entity_id,
+      otherGasCost: house.otherGas?.attributes.cost,
+      gasHours: house.gas?.attributes.heating_hours,
+      elecHours: house.elec?.attributes.heater_hours,
+      otherElec: num(house.otherElec?.state),
+      otherElecEntity: house.otherElec?.entity_id,
       elecProjected: house.elec?.attributes.projected_today_kwh,
       elecMeasured: house.elec?.attributes.measured === true,
+      elecEst: house.elec ? house.elec.attributes.source !== "smart_meter" && house.elec.attributes.measured !== true : false,
       log: (house.log?.attributes.entries || []).slice(0, 15),
       houseGrade: house.retention?.attributes.grade,
       houseScore: num(house.retention?.state),
@@ -487,22 +503,18 @@ class SmartHeatingCard extends HTMLElement {
           ${floors.map((f) => this._floor(f, d.rooms.filter((r) => r.floor === f))).join("")}
           <div class="ground-line" aria-hidden="true"></div>
         </div>` : `
-        <div class="compact">
-          ${floors.map((f) => this._compactFloor(f, d.rooms.filter((r) => r.floor === f))).join("")}
-        </div>`}
+        ${compactHouse(floors.map((f) => this._compactFloor(f, d.rooms.filter((r) => r.floor === f))).join(""))}`}
 
         <footer class="${this._config.layout === "full" ? "" : "slim"}">
           <dl>
             ${d.houseTemp != null ? `<div><dt>House</dt><dd>${d.houseTemp.toFixed(1)}°</dd></div>` : ""}
             ${d.outdoor != null ? `<div><dt>Outdoor today</dt><dd>${d.outdoor.toFixed(1)}°</dd></div>` : ""}
-            ${d.gas != null ? `<div ${moreInfo(d.gasEntity)}><dt>Gas today${d.gasMeasured ? "" : " (est.)"}</dt><dd>${d.gas.toFixed(1)} kWh</dd></div>` : ""}
-            ${d.cost != null ? `<div ${moreInfo(d.costEntity)}><dt>Gas cost today</dt><dd>£${d.cost.toFixed(2)}</dd></div>` : ""}
-            ${d.elec != null ? `<div ${moreInfo(d.elecEntity)}><dt>Electric today${d.elecMeasured ? "" : " (est.)"}</dt><dd>${d.elec.toFixed(1)} kWh</dd></div>` : ""}
-            ${d.elecCost != null ? `<div ${moreInfo(d.elecCostEntity)}><dt>Electric cost today</dt><dd>£${d.elecCost.toFixed(2)}</dd></div>` : ""}
+            ${energySummary(d, this._config.layout === "full", this._energyOpen)}
           </dl>
           <p>${esc(d.reason || "")}</p>
           <button class="logbtn" data-log aria-expanded="${this._showLog}">${this._showLog ? "Hide log" : "Show log"}</button>
         </footer>
+        ${this._energyOpen ? energyBreakdown(d) : ""}
         ${this._showLog ? this._logPanel(d.log) : ""}
       </ha-card>`;
 
@@ -558,19 +570,15 @@ class SmartHeatingCard extends HTMLElement {
         ${this._houseStepper(d)}
         ${ex ? `
         <div class="more">
-          <div class="compact">
-            ${floors.map((f) => this._compactFloor(f, d.rooms.filter((r) => r.floor === f))).join("")}
-          </div>
+          ${compactHouse(floors.map((f) => this._compactFloor(f, d.rooms.filter((r) => r.floor === f))).join(""))}
           <footer class="slim">
             <dl>
-              ${d.gas != null ? `<div ${moreInfo(d.gasEntity)}><dt>Gas${d.gasMeasured ? "" : " est."}</dt><dd>${d.gas.toFixed(1)} kWh</dd></div>` : ""}
-              ${d.cost != null ? `<div ${moreInfo(d.costEntity)}><dt>Gas cost</dt><dd>£${d.cost.toFixed(2)}</dd></div>` : ""}
-              ${d.elec != null ? `<div ${moreInfo(d.elecEntity, d.elecProjected != null ? `About ${Number(d.elecProjected).toFixed(1)} kWh by midnight at this rate` : "")}><dt>Electric${d.elecMeasured ? "" : " est."}</dt><dd>${d.elec.toFixed(1)} kWh</dd></div>` : ""}
-              ${d.elecCost != null ? `<div ${moreInfo(d.elecCostEntity)}><dt>Electric cost</dt><dd>£${d.elecCost.toFixed(2)}</dd></div>` : ""}
+              ${energySummary(d, false, this._energyOpen)}
               ${d.houseGrade ? `<div><dt>Insulation</dt><dd><span class="grade g-${d.houseGrade}">${d.houseGrade}</span> ${d.houseScore}</dd></div>` : ""}
             </dl>
             <button class="logbtn" data-log aria-expanded="${this._showLog}">${this._showLog ? "Hide log" : "Log"}</button>
           </footer>
+          ${this._energyOpen ? energyBreakdown(d) : ""}
           ${this._showLog ? this._logPanel(d.log) : ""}
         </div>` : ""}
       </ha-card>`;
@@ -621,6 +629,11 @@ class SmartHeatingCard extends HTMLElement {
       this._render();
     }));
     root.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => this._setMode(b.dataset.mode)));
+    root.querySelectorAll("[data-energy]").forEach((b) => b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._energyOpen = !this._energyOpen;
+      this._render();
+    }));
     root.querySelectorAll("[data-oc]").forEach((b) => b.addEventListener("click", () => {
       this._error = null;
       if (b.dataset.oc === "all") this._call("smart_heating", "one_cycle", { all_rooms: true });
@@ -796,6 +809,60 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// Rooms by floor inside a house outline: roof, walls and ground, all one line.
+function compactHouse(inner) {
+  return `<div class="chouse">
+    <svg class="roof" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><polyline points="0,10 50,1 100,10" /></svg>
+    <div class="compact">${inner}</div>
+    <div class="ground-line" aria-hidden="true"></div>
+  </div>`;
+}
+
+// Energy in the footer: only what the heating used, with an (i) that opens where all the energy went.
+const EIC_GAS = `<span class="eic flame">${ICON_FLAME}</span>`, EIC_ELEC = `<span class="eic">${ICON_BOLT}</span>`;
+
+function energySummary(d, label, open) {
+  const hasGas = d.gas != null, hasElec = d.elec != null;
+  if (!hasGas && !hasElec) return "";
+  const kwh = (v) => `${v.toFixed(1)} kWh`;
+  const proj = d.elecProjected != null ? `. About ${Number(d.elecProjected).toFixed(1)} kWh by midnight at this rate` : "";
+  const info = `<button class="ibtn" data-energy aria-expanded="${open}" aria-label="Where the energy went" title="Where the energy went">${ICON_INFO}</button>`;
+  const fig = (entity, icon, title, value) => `<span class="efuel">${icon}<span ${moreInfo(entity, title)}>${value}</span></span>`;
+  const cost = hasGas && hasElec ? (d.cost || 0) + (d.elecCost || 0) : hasGas ? d.cost : d.elecCost;
+  return `<div class="efig">${label ? "<dt>Heating today</dt>" : ""}<dd>`
+    + (hasGas ? fig(d.gasEntity, EIC_GAS, `Heating gas today${d.gasMeasured ? "" : " (estimated)"}`, kwh(d.gas)) : "")
+    + (hasElec ? fig(d.elecEntity, EIC_ELEC, `Heating electricity today${d.elecEst ? " (estimated)" : ""}${proj}`, kwh(d.elec)) : "")
+    + (cost != null ? `<span class="esep">·</span><span class="ecost" title="Heating cost today">£${cost.toFixed(2)}</span>` : "")
+    + `${info}</dd></div>`;
+}
+
+// The breakdown behind the (i): heating rows count; hot water, hob and other are shown greyed and don't.
+function energyBreakdown(d) {
+  const hrs = (v) => (v == null ? "" : ` <small>${Number(v).toFixed(1)} h</small>`);
+  const kwh = (v) => (v == null ? "–" : `${Number(v).toFixed(1)} kWh`);
+  const gbp = (v) => (v == null ? "–" : `£${Number(v).toFixed(2)}`);
+  const row = (label, hours, k, c, entity, muted = false) =>
+    `<li class="${muted ? "muted" : ""}" ${moreInfo(entity)}><span>${label}${hrs(hours)}</span><span class="n">${kwh(k)}</span><span class="n">${gbp(c)}</span></li>`;
+  const sub = (label, k, c) => `<li class="esub"><span>${label}</span><span class="n">${kwh(k)}</span><span class="n">${gbp(c)}</span></li>`;
+  const parts = [];
+  if (d.gas != null) {
+    parts.push(`<p class="ehead">${EIC_GAS}Gas${d.gasMeasured ? "" : " (estimated)"}</p><ul>`
+      + row("Heating", d.gasHours, d.gas, d.cost, d.gasEntity)
+      + (d.hwGas != null ? row("Hot water", d.hwHours, d.hwGas, d.hwGasCost, d.hwGasEntity, true) : "")
+      + (d.otherGas != null ? row("Hob and other", null, d.otherGas, d.otherGasCost, d.otherGasEntity, true) : "")
+      + sub("Gas for heating", d.gas, d.cost) + "</ul>");
+  }
+  if (d.elec != null) {
+    parts.push(`<p class="ehead">${EIC_ELEC}Electricity${d.elecEst ? " (estimated)" : ""}</p><ul>`
+      + row("Heaters", d.elecHours, d.elec, d.elecCost, d.elecEntity)
+      + sub("Electricity for heating", d.elec, d.elecCost) + "</ul>");
+  }
+  // One fuel: its subtotal is already the heating cost. Hybrid: add them up.
+  const total = d.gas != null && d.elec != null
+    ? `<p class="etotal"><span>Heating cost today</span><b>£${((d.cost || 0) + (d.elecCost || 0)).toFixed(2)}</b></p>` : "";
+  return `<div class="ebreak" role="region" aria-label="Where the energy went">${parts.join("")}${total}</div>`;
+}
+
 // Time left until an ISO moment, as m:ss.
 function fmtLeft(until) {
   const s = Math.max(0, Math.round((new Date(until).getTime() - Date.now()) / 1000));
@@ -818,6 +885,9 @@ const STYLE = `<style>
     --sh-fault: var(--error-color, #db4437);
     --sh-line: var(--divider-color, rgba(127,127,127,.25));
     --sh-muted: var(--secondary-text-color);
+    --sh-house: color-mix(in srgb, var(--primary-text-color) 45%, transparent);  /* roof, walls and floor of the house */
+    --sh-house-w: 1.5px;
+    --sh-floor: color-mix(in srgb, var(--primary-text-color) 32%, transparent);  /* lines between floors */
   }
   ha-card { padding: 16px 16px 12px; }
   header { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; justify-content: space-between; margin-bottom: 14px; }
@@ -833,12 +903,15 @@ const STYLE = `<style>
   .modes button:focus-visible, .room:focus-visible, .actions button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
 
   .section { position: relative; }
-  .roof { display: block; width: 100%; height: 18px; overflow: visible; }
-  .roof polyline { fill: none; stroke: var(--primary-text-color); stroke-width: 1.2; vector-effect: non-scaling-stroke; opacity: .55; }
-  .floor { display: grid; grid-template-columns: 52px 1fr; border-left: 1.5px solid var(--sh-line); border-right: 1.5px solid var(--sh-line); border-top: 1px solid var(--sh-line); }
+  .roof { display: block; width: calc(100% - var(--sh-house-w)); margin: 0 auto; height: 18px; overflow: visible; }
+  .roof polyline { fill: none; stroke: var(--sh-house); stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+  .floor { display: grid; grid-template-columns: 52px 1fr; border-left: var(--sh-house-w) solid var(--sh-house); border-right: var(--sh-house-w) solid var(--sh-house); border-top: 1px solid var(--sh-floor); }
+  .section .floor:first-of-type { border-top: 0; }
   .floor-name { padding: 10px 0 0 8px; font-size: .75rem; color: var(--sh-muted); display: flex; flex-direction: column; gap: 2px; }
   .floor-name span { font-size: .8125rem; color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
-  .ground-line { height: 0; border-top: 2.5px solid var(--primary-text-color); opacity: .55; margin: 0 -6px; }
+  .ground-line { height: 0; border-top: var(--sh-house-w) solid var(--sh-house); }
+  .chouse .roof { height: 14px; }
+  .chouse .compact { border: 0 solid var(--sh-house); border-width: 0 var(--sh-house-w); padding: 2px 8px; }
 
   .rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; padding: 8px 8px 8px 0; }
   .room { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 2px;
@@ -863,7 +936,7 @@ const STYLE = `<style>
   .room.dumb { background: transparent; border: 1px dashed var(--sh-line); border-left-width: 3px; }
   .room[aria-expanded="true"] { box-shadow: inset 0 0 0 1px var(--primary-text-color); }
 
-  .actions { grid-column: 1 / -1; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--sh-line); }
+  .actions { grid-column: 1 / -1; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--sh-line); background: rgba(255, 255, 255, .1); }  /* the open room stands out */
   .actions p { margin: 0 0 8px; font-size: .8125rem; color: var(--sh-muted); }
   .actions .buttons { display: flex; flex-wrap: wrap; gap: 6px; }
   .details { margin: 0 0 10px; display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px 12px; }
@@ -884,6 +957,27 @@ const STYLE = `<style>
   footer dt { font-size: .75rem; color: var(--sh-muted); }
   footer dd { margin: 0; font-size: 1rem; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
   footer [data-more] { cursor: pointer; border-radius: 6px; }
+  .ibtn { all: unset; cursor: pointer; display: inline-flex; width: 16px; height: 16px; margin-left: 6px; vertical-align: -2px; border-radius: 50%; color: var(--sh-muted); }
+  .ibtn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+  .ibtn:hover, .ibtn[aria-expanded="true"] { color: var(--primary-color); }
+  .ibtn:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+  .ebreak { margin-top: 10px; padding: 10px 12px; border-radius: 10px; font-size: .8125rem; color: var(--primary-text-color);
+            background: color-mix(in srgb, var(--primary-text-color) 5%, transparent); }
+  .ebreak ul { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 1px; }
+  .ebreak ul:last-child { margin-bottom: 2px; }
+  .ebreak li { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; padding: 3px 0; font-variant-numeric: tabular-nums; }
+  .ebreak li:not(.esub) > span:first-child::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+                                                     margin: 0 8px 1px 2px; background: var(--sh-heat); vertical-align: middle; }
+  .ebreak li.muted > span:first-child::before { background: var(--sh-muted); opacity: .6; }
+  .ebreak li[data-more] { cursor: pointer; border-radius: 4px; }
+  .ebreak li[data-more]:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+  .ebreak .n { text-align: right; min-width: 60px; }
+  .ebreak li.muted { color: var(--sh-muted); }
+  .ebreak li small { color: var(--sh-muted); font-size: .75rem; }
+  .ebreak li.esub { border-top: 1px solid var(--divider-color); margin-top: 3px; padding-top: 5px; font-weight: 500; }
+  .ebreak .etotal b { font-size: .8125rem; }
+  .ebreak .ehead { margin: 2px 0 3px; font-size: .6875rem; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--sh-muted); }
+  .ebreak .etotal { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0 6px; padding-top: 7px; border-top: 1px solid var(--divider-color); font-size: .875rem; }
   footer [data-more]:hover dd, footer [data-more]:focus-visible dd { color: var(--primary-color); }
   footer [data-more]:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
   footer p { margin: 0; font-size: .75rem; color: var(--sh-muted); }
@@ -892,7 +986,7 @@ const STYLE = `<style>
 
   /* compact layout */
   .compact { display: flex; flex-direction: column; gap: 2px; }
-  .cfloor { display: grid; grid-template-columns: 46px 1fr; column-gap: 8px; padding: 6px 0; border-top: 1px solid var(--sh-line); }
+  .cfloor { display: grid; grid-template-columns: 46px 1fr; column-gap: 8px; padding: 6px 0; border-top: 1px solid var(--sh-floor); }
   .cfloor:first-child { border-top: 0; }
   .clabel { font-size: .75rem; color: var(--sh-muted); display: flex; flex-direction: column; padding-top: 5px; line-height: 1.25; }
   .clabel span { color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
@@ -913,10 +1007,20 @@ const STYLE = `<style>
   .chip[aria-expanded="true"] { outline: 1.5px solid var(--primary-text-color); outline-offset: 1px; }
   .chip:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
   .cdetail { grid-column: 1 / -1; margin-top: 6px; }
-  footer.slim { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--sh-line); align-items: center; }
+  footer.slim { margin-top: 8px; padding-top: 8px; align-items: center; }
   footer.slim dl { gap: 4px 16px; }
   footer.slim dt { display: inline; margin-right: 4px; }
   footer.slim dd { display: inline; font-size: .875rem; }
+  footer.slim .efig dd { font-size: .8125rem; }
+  .efuel { white-space: nowrap; }
+  .efuel + .efuel { margin-left: 10px; }
+  .eic { --s: 15px; display: inline-flex; width: var(--s); height: var(--s); margin-right: 3px; vertical-align: calc(.36em - var(--s) / 2); color: var(--sh-muted); }
+  .eic.flame { vertical-align: calc(.36em - var(--s) * .5625); }  /* the flame sits high in its box */
+  .eic svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .efig .ibtn { vertical-align: calc(.36em - 8px); }
+  .ehead .eic { --s: 13px; margin-right: 5px; }
+  .esep { margin: 0 5px; color: var(--sh-muted); }
+  .ecost { font-size: .85em; }
   footer.slim p { display: none; }
   footer.slim { flex-wrap: nowrap; }
   footer.slim .logbtn { margin-left: auto; white-space: nowrap; }
@@ -971,7 +1075,6 @@ const STYLE = `<style>
   .fp.on b { color: var(--sh-heat); }
   .fp i { width: 6px; height: 6px; border-radius: 50%; background: var(--sh-heat); }
   .fp.out { margin-left: auto; }
-  .more { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--sh-line); }
   .modes.small { margin-bottom: 6px; }
   .modes.small button { padding: 4px 10px; font-size: .75rem; }
   .mini .chip { height: 26px; padding: 0 8px; background: color-mix(in srgb, var(--card-background-color, #fff) 55%, transparent); }

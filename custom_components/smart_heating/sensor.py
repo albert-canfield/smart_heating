@@ -35,31 +35,58 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddC
                                 "rooms": {r.cfg.name: round(r.model.progress * 100) for r in c.rooms.values()}}),
         Metric(c, "house_heat_loss_tau", lambda c: c.house_tau, UnitOfTime.HOURS, kind="house_tau"),
     ]
+    kwh = dict(device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING)
+    money = dict(device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL, daily=True)
+
+    def gas_rates(c):
+        r = c.gas_rates
+        return {"heating_kw": r.rates.get("heating"), "hot_water_kw": r.rates.get("hot_water"),
+                "colder_per_10c_kw": r.rates.get("cold"), "other_kwh_per_day": r.base,
+                "meter_days": r.days, "meter_error": r.error, "learned": r.days >= 3}
+
     gas = [
-        Metric(c, "gas_today", lambda c: c.gas_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="gas_today",
-               device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING,
-               attrs=lambda c: {"measured": c.gas_measured, "source": c.gas_source, "heating_runtime_min": round(c.energy.heat_runtime_min), "hot_water_runtime_min": round(c.energy.hw_runtime_min)}),
-        Metric(c, "gas_cost_today", lambda c: c.gas_cost, "GBP", kind="gas_cost_today",
-               device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL, daily=True,
-               attrs=lambda c: {"price_per_kwh": round(c.gas_price_now, 4), "price_from": c.gas_price_from, "measured": c.gas_measured}),
+        Metric(c, "gas_today", lambda c: c.gas_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="gas_today", **kwh,
+               attrs=lambda c: {"source": c.gas_source, "measured": c.gas_measured,
+                                "heating_hours": round(c.energy.use_hours(15.5)["heating"], 2),
+                                "boiler_hours": round(c.energy.runtime_min / 60, 2), "boiler_starts": c.energy.burns,
+                                **gas_rates(c), "yesterday": c.gas_yesterday}),
+        Metric(c, "gas_cost_today", lambda c: c.gas_cost, "GBP", kind="gas_cost_today", **money,
+               attrs=lambda c: {"price_per_kwh": round(c.gas_price_now, 4), "price_from": c.gas_price_from,
+                                "yesterday": round(c.gas_yesterday["heating_kwh"] * c.gas_price_now, 2) if c.gas_yesterday else None}),
+        Metric(c, "hot_water_gas_today", lambda c: c.gas_hw_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="hot_water_gas_today", **kwh,
+               attrs=lambda c: {"hot_water_hours": round(c.energy.use_hours(15.5)["hot_water"], 2),
+                                "cost": round(c.gas_hw_kwh * c.gas_price_now, 2)}),
         Metric(c, "boiler_runtime_today", lambda c: round(c.energy.runtime_min), UnitOfTime.MINUTES, kind="runtime_today"),
         Metric(c, "boiler_burns_today", lambda c: c.energy.burns, None, kind="burns_today"),
         Metric(c, "gas_per_degree_day", lambda c: c.kwh_per_dd, "kWh/°Cd", kind="kwh_per_degree_day",
                attrs=lambda c: {"degree_days_today": c.energy.degree_days(c.settings.season_gate), "base": c.settings.season_gate}),
     ]
+    if c.gas_source == "smart_meter":
+        gas += [
+            Metric(c, "other_gas_today", lambda c: c.gas_other_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="other_gas_today", **kwh,
+                   attrs=lambda c: {"cost": round((c.gas_other_kwh or 0) * c.gas_price_now, 2)}),
+            Metric(c, "house_gas_today", lambda c: c.gas_house_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="house_gas_today", **kwh),
+        ]
     if c.has_gas:
         house += gas
-    if c.has_heaters:
+    if c.has_electric:
         house += [
-            Metric(c, "electric_today", lambda c: round(c.elec_kwh, 3), UnitOfEnergy.KILO_WATT_HOUR, kind="electric_today",
-                   device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING,
-                   attrs=lambda c: {"measured": c.electric_measured, "projected_today_kwh": c.elec_projected_kwh,
-                                    "power_now_w": round(sum(c.heater_power_w(r) for r in c.rooms.values() if r.heaters))}),
-            Metric(c, "electric_cost_today", lambda c: c.elec_cost, "GBP", kind="electric_cost_today",
-                   device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL, daily=True,
-                   attrs=lambda c: {"price_per_kwh": c.elec_price,
-                                    "projected_today": round((c.elec_projected_kwh or 0) * c.elec_price, 2) if c.elec_projected_kwh else None}),
+            Metric(c, "electric_today", lambda c: round(c.elec_kwh, 3), UnitOfEnergy.KILO_WATT_HOUR, kind="electric_today", **kwh,
+                   attrs=lambda c: {"measured": c.electric_measured, "source": c.elec_source, "projected_today_kwh": c.elec_projected_kwh,
+                                    "heater_hours": round(sum(c.elec_hours.values()), 2),
+                                    "power_now_w": round(sum(c.heater_power_w(r) for r in c.rooms.values() if r.heaters)),
+                                    "heater_kw": c.elec_rates.rates, "learned_from_live_power": c.step_kw,
+                                    "meter_days": c.elec_rates.days, "meter_error": c.elec_rates.error,
+                                    "yesterday": c.elec_yesterday}),
+            Metric(c, "electric_cost_today", lambda c: c.elec_cost, "GBP", kind="electric_cost_today", **money,
+                   attrs=lambda c: {"price_per_kwh": round(c.elec_price_now, 4),
+                                    "projected_today": round((c.elec_projected_kwh or 0) * c.elec_price_now, 2) if c.elec_projected_kwh else None}),
         ]
+        if c.elec_source == "smart_meter":
+            house += [
+                Metric(c, "other_electricity_today", lambda c: c.elec_other_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="other_electricity_today", **kwh),
+                Metric(c, "house_electricity_today", lambda c: c.elec_house_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="house_electricity_today", **kwh),
+            ]
     house.append(DecisionLog(c))
     house.append(RetentionSensor(c, "house_heat_retention", lambda c: c.house_tau, scope="house"))
     if len(c.floors) > 1:
@@ -433,5 +460,5 @@ class RoomEnergy(RoomEntity, SensorEntity):
             "eco_w": r.heater_eco_w,
             "measured": len(r.power_sensors) == len(r.heaters),
             "power_sensors": list(r.power_sensors.values()),
-            "cost_today": round(r.kwh_today * c.elec_price, 2),
+            "cost_today": round(r.kwh_today * c.elec_price_now, 2),
         }

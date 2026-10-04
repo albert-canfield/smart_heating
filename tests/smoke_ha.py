@@ -132,18 +132,50 @@ async def main() -> None:
     assert ("climate", "set_temperature", {"entity_id": "climate.living_trv", "temperature": 22}) in calls
     assert ("switch", "turn_on", {"entity_id": "switch.heating"}) in calls
 
-    # Gas accounting from the meter.
-    hass.states.async_set("sensor.gas", "1001.5", {"unit_of_measurement": "m³"})
+    # Gas: the meter is the truth for the total; burning time shares it between heating, hot water and other.
+    c.energy.heat_only_min = 60.0  # an hour of heating so far today
+    hass.states.async_set("sensor.gas", "1001.5", {"unit_of_measurement": "m³"})  # 16.8 kWh on the meter
     await c.async_refresh()
-    print("gas today kWh", c.gas_kwh, "measured", c.gas_measured, "cost", c.gas_cost)
-    assert c.gas_measured and abs(c.gas_kwh - 16.8) < 0.01
-    assert c.gas_cost == 1.01 and c.gas_price_from == "fixed", "unit price only, no standing charge"
+    print("gas split (heating, hot water, other, house):", (c.gas_kwh, c.gas_hw_kwh, c.gas_other_kwh, c.gas_house_kwh), "| £", c.gas_cost)
+    assert c.gas_measured and abs(c.gas_house_kwh - 16.8) < 0.01
+    assert abs(c.gas_kwh - 10.5) < 0.3, c.gas_kwh  # 1 h at the starting rate: 70% of 15 kW
+    assert abs(c.gas_kwh + c.gas_hw_kwh + c.gas_other_kwh - c.gas_house_kwh) < 0.05
+    assert abs(c.gas_cost - c.gas_kwh * 0.06) < 0.02 and c.gas_price_from == "fixed", "heating gas only, at the unit price"
     # A unit rate sensor (here in pence) prices each new kWh at the rate when it was used.
     hass.states.async_set("sensor.gas_rate", "10.0", {"unit_of_measurement": "p/kWh"})
-    hass.states.async_set("sensor.gas", "1002.0", {"unit_of_measurement": "m³"})
+    cost0, kwh0 = c.gas_cost, c.gas_kwh
+    c.energy.heat_only_min += 30.0
     await c.async_refresh()
     print("gas with rate sensor:", c.gas_kwh, "kWh | £", c.gas_cost, "|", c.gas_price_from, c.gas_price_now)
-    assert abs(c.gas_kwh - 22.4) < 0.01 and c.gas_cost == 1.57 and c.gas_price_from == "rate sensor"
+    assert c.gas_price_from == "rate sensor" and abs(c.gas_cost - (cost0 + (c.gas_kwh - kwh0) * 0.10)) < 0.02
+    # Day change: yesterday's meter total is shared out by the model and recorded.
+    c.energy.day = (dt_util.as_local(dt_util.utcnow()).date() - timedelta(days=1)).isoformat()
+    await c.async_refresh()
+    y = c.gas_yesterday
+    print("gas yesterday:", y)
+    assert c.gas_days and c.gas_days[-1].day == y["day"] and abs(y["meter_kwh"] - 16.8) < 0.05
+    assert abs(y["heating_kwh"] + y["hot_water_kwh"] + y["other_kwh"] - y["meter_kwh"]) < 0.05
+    # Ten meter days with a boiler really burning 12 kWh/h for heating and 9 for hot water: the rates follow.
+    import random
+    from custom_components.smart_heating.core.consumption import DayRecord
+    rng = random.Random(3)
+    c.gas_days = []
+    for i in range(10):
+        heat, hw = rng.uniform(2, 6), rng.uniform(0.5, 1.5)
+        c.gas_days.append(DayRecord(f"2025-12-{i + 1:02d}", 12.0 * heat + 9.0 * hw + 0.6, {"heating": heat, "hot_water": hw, "cold": 0.0}))
+    c._refit_gas()
+    print("learned gas rates:", c.gas_rates.rates, "base", c.gas_rates.base, "days", c.gas_rates.days, "error", c.gas_rates.error)
+    assert abs(c.gas_rates.rates["heating"] - 12) < 0.8 and c.gas_rates.days == 10
+    # No smart meter: the same split from the starting rates (70% of the boiler's input), as an estimate.
+    c.house_cfg["energy_source"] = "estimate"
+    c.gas_days = []  # a home that never had a meter (one that had keeps the rates it learned)
+    c._refit_gas()
+    c.energy.heat_only_min, c.energy.hw_only_min, c.energy.both_min, c.energy.other_min = 120.0, 30.0, 0.0, 0.0
+    await c.async_refresh()
+    print("no meter (heating, hot water, other, house, measured):", c.gas_kwh, c.gas_hw_kwh, c.gas_other_kwh, c.gas_house_kwh, c.gas_measured)
+    assert not c.gas_measured and c.gas_house_kwh is None
+    assert abs(c.gas_kwh - 21.0) < 0.3 and abs(c.gas_hw_kwh - 5.25) < 0.3 and c.gas_other_kwh is not None
+    c.house_cfg["energy_source"] = "smart_meter"
 
     # Alarm armed away: heating off (safety only), mode preserved.
     hass.states.async_set("alarm_control_panel.alarmo", "armed_away")

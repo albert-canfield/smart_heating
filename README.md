@@ -34,7 +34,7 @@ It works with what you already have: a gas boiler with a tank, a combi, electric
 | 🔥 **Burns less** | Waits when a room is already warming, lets heat rise from the floor below, batches small demands and gives hot water priority. |
 | 🪜 **One floor or many** | Uses the stack effect in multi-floor homes so upper rooms often heat themselves. |
 | ⚡ **Gas, combi, electric or hybrid** | Rooms with only electric heat never fire the boiler. One room with a heater? It uses the heater instead of firing the whole boiler. |
-| 📊 **Fully transparent** | kWh and cost today (gas and electric), an A to G insulation grade per room, floor and house, and a log of every decision. |
+| 📊 **Fully transparent** | The heating's own kWh and cost today (gas and electric, separated from hot water and the rest of the house), an A to G insulation grade per room, floor and house, and a log of every decision. |
 | 🛡️ **Safe by design** | Frost protection is always on, and the boiler is protected from short cycling. It never fights your other controls. |
 | 🧩 **Set up in minutes** | A short wizard asks what heats your home. Your Home Assistant areas become rooms with their sensors filled in. |
 
@@ -76,7 +76,7 @@ Smart Heating heats from day one with sensible defaults and learns your home in 
 
 # Documentation
 
-Version 0.10.3. How it starts:
+Version 0.11.0. How it starts:
 
 1. **Heating from day one** (or **Watching** if you picked *Watch first*: it decides and logs, never touches the boiler or TRVs, until you tap **Start heating** and confirm).
 2. **Learning in the background**: each room's heat-loss time constant, free-heat gain and warm-up rate, from normal life. Heating decisions don't wait for it.
@@ -114,6 +114,14 @@ Only real radiator heat counts: burns for hot water only (cylinder with the heat
 
 Once mild, it stays mild until the mean drops 0.5° below the gate, so it doesn't flip back and forth. The log says which rule allowed or blocked each room.
 
+### How energy is shared out
+
+The meter is the truth for the total; run time decides how it is shared; the rates are learned from your own days.
+
+- **Gas**: each minute the boiler burns is sorted by what asked for it: heating, hot water, or both. Each day, *meter = a x hot water hours + b x heating hours + k x heating hours x (degrees below 15.5° outside) / 10 + c*, fitted over the last 28 days. **a** and **b** are your boiler's real kWh per hour, **k** how much harder it works on cold days, **c** the hob. They start at 70% of the boiler's input (and 0.5 kWh/day for the hob) and need 3 meter days before they move; a day far off the rest (a meter glitch) is left out.
+- **Electricity**: each heater's on time is counted per mode (full or eco), and its real draw is learned the same way (a "2000 W" heater in a half mode becomes 1 kW), starting from the power set in its room. With a live house power sensor, the jump when a heater switches on or off teaches its draw within minutes. A heater with its own power sensor is simply measured.
+- **Live**: today's hours x the learned rates, updated as they run. **Daily**: after midnight the meter's total is shared out and logged, for example *Gas 2026-10-05: meter 31.8 kWh, heating 21.4, hot water 9.8, other 0.6 (model +4%)*. The learned rates, how many meter days they rest on and the recent error are attributes of the heating sensors and in the diagnostics.
+
 ### Setting temperatures
 
 On the card, when the mode is One cycle or Continuous:
@@ -148,7 +156,7 @@ Other fallbacks:
 - **No outdoor sensor**: the weather entity's current temperature is used, blended with its hourly forecast.
 - **No weather entity either**: season gate and learning are skipped, predictions stay empty.
 - **No presence, lights or media**: rooms use their comfort schedule and manual "Heat now".
-- **No smart meter**: gas is estimated from boiler running time (boiler running sensor, or the heating switch or thermostat) times the boiler's gas input, flagged as an estimate.
+- **No smart meter**: gas is estimated from boiler running time (boiler running sensor, or the heating switch or thermostat) at 70% of the boiler's gas input, and electricity from each heater's on time at its rated (or eco) power, flagged as estimates.
 - **No away source**: away mode is never triggered; use the mode buttons.
 - **No night schedule**: 22:00 to 07:00, changeable in Configure.
 - **No areas or floors in HA**: rooms can still be added; floor is then picked in the room form.
@@ -173,7 +181,7 @@ Settings, Devices & services, Add integration, Smart Heating. A short wizard:
 4. **Hot water**: tank heating sensor and *Hot water first* (tank and hybrid only).
 5. **Outside temperature**: your weather entity (enough on its own) and optionally a real outdoor sensor.
 6. **Optional extras**: away detection, night schedule.
-7. **Gas use and cost** (gas types): with a smart meter integration (for example Octopus Energy or Glow), pick the gas consumption sensor (a running total in kWh or m³; a total that restarts at midnight is fine) and optionally a unit rate sensor in £/kWh. Without one, enter the boiler's gas input (for example 15 kW) and your unit price, and gas is estimated while the boiler runs.
+7. **Energy** (asked to match your heating type: gas for boilers, electricity for electric heaters, both for hybrid): with a smart meter integration (for example Octopus Energy or Glow), pick the consumption sensor (a running total in kWh, or m³ for gas; a total that restarts at midnight is fine) and optionally a unit rate sensor in £/kWh, and for electricity a live house power sensor (for example the Home Mini "current demand"). Without a smart meter, enter the boiler's gas input (for example 15 kW) or rely on the heaters' rated power, plus your unit price.
 8. **Rooms**: areas with a thermometer, TRV or heater are pre-ticked and become rooms in one go. Pick **Start heating now** or **Watch first**.
 
 Everything can be changed later: **Reconfigure** repeats the wizard; **Configure** has short pages for *Temperatures & Night*, *Energy Prices*, *Import Rooms From Areas*, *Relearn Rooms* and *Advanced*.
@@ -222,9 +230,10 @@ House device:
 - `sensor.smart_heating_forecast_minimum_24h`
 - `sensor.smart_heating_calibration` (% overall, per room in attributes), `binary_sensor.smart_heating_calibrated`
 - `sensor.smart_heating_house_heat_loss_time_constant` (hours, median of rooms)
-- `sensor.smart_heating_gas_today` (kWh; `measured` and `source` say smart meter vs estimate; heating and hot water runtime). A smart meter covers all the gas in the house, including hot water and cooking
-- `sensor.smart_heating_gas_cost_today` (£, unit costs only: standing charges are left out because the heating can't change them. With a unit rate sensor, each kWh is costed at the rate when it was used)
-- Both keep long-term statistics: tap them on the card for their history, find them in History, or add them to the Energy dashboard (gas consumption, and the cost as "an entity tracking the total costs")
+- `sensor.smart_heating_gas_today`: **heating** gas today (kWh), `sensor.smart_heating_gas_cost_today` its cost, `sensor.smart_heating_hot_water_gas_today`, and with a smart meter `sensor.smart_heating_other_gas_today` (hob and anything unassigned) and `sensor.smart_heating_house_gas_today` (the meter). Heating + hot water + other = the meter
+- `sensor.smart_heating_electric_today`: **heating** electricity today, its cost, and with a smart meter `..._other_electricity_today` and `..._house_electricity_today`
+- Costs are unit costs only: standing charges are left out because the heating can't change them. With a unit rate sensor, each kWh is costed at the rate when it was used
+- All of these keep long-term statistics: tap them on the card for their history, find them in History, or add them to the Energy dashboard (gas consumption, and the cost as "an entity tracking the total costs")
 - `sensor.smart_heating_boiler_runtime_today`, `sensor.smart_heating_boiler_burns_today`
 - `sensor.smart_heating_gas_per_degree_day` (kWh per °C·day below the season gate: the weather-normalised efficiency figure)
 
@@ -263,7 +272,7 @@ layout: compact        # compact (default): summary, tap to expand; full: large 
 
 All options are also in the card's visual editor. The title and icon share the top line with the status, so they cost no extra space.
 
-Compact shows house temperature (always the house average), status with small indicators (flame = boiler burning, outline flame = boiler called, radiator = rooms heating, bolt = electric heaters on, drop = hot water heating, moon = night, crossed house = away, eye = watching only), floor averages (only when rooms span more than one floor) and the mode buttons (Off grey, One cycle amber, Continuous orange when selected); the background tint follows the house temperature (blue when cold, through green and yellow, to orange when warm). Tap it to expand rooms, gas, cost and the log. A small person icon marks rooms in use (presence, media, or a light at night). Tap a room for its details (need, target, trend; predictions, insulation and warm-up appear once learned) and Heat now / Turn off / Back to auto. **Show log** lists recent decisions.
+Compact shows house temperature (always the house average), status with small indicators (flame = boiler burning, outline flame = boiler called, radiator = rooms heating, bolt = electric heaters on, drop = hot water heating, moon = night, crossed house = away, eye = watching only), floor averages (only when rooms span more than one floor) and the mode buttons (Off grey, One cycle amber, Continuous orange when selected); the background tint follows the house temperature (blue when cold, through green and yellow, to orange when warm). Tap it to expand rooms (inside the house outline, by floor), the heating's energy and the log. The bottom shows only what the heating used today in kWh and pounds, with a flame for gas and a bolt for electricity (both for hybrid); the small (i) next to it opens the breakdown: heating rows with their hours count, hot water and the hob are shown greyed and aren't counted, with subtotals per fuel, plus the day's total heating cost for hybrid. A small person icon marks rooms in use (presence, media, or a light at night). Tap a room for its details (need, target, trend; predictions, insulation and warm-up appear once learned) and Heat now / Turn off / Back to auto. **Show log** lists recent decisions.
 
 ## Logs and diagnostics
 

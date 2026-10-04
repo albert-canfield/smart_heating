@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.0
+- Energy is shared out instead of all or nothing: the meter is the truth for the total, boiler time (heating, hot water, both) and heater time (per mode) decide the share, and the rates are learned from your own days (rolling 28 days, starting from 70% of the boiler's input and the heaters' rated power, with a cold-weather term for heating).
+- Gas: Heating gas today and its cost (the existing sensors, now heating only), plus Hot water gas today, and with a smart meter Other gas today and House gas today. Heating + hot water + other = the meter.
+- Electricity: each heater's real draw is learned (a 2000 W heater in a half mode becomes 1 kW), quickly from a live house power sensor when you have one; Heating electricity today and its cost, plus Other and House electricity with a smart meter. Electricity costs follow a unit rate sensor too.
+- Setup asks the energy questions that match your heating: gas for boilers, electricity for electric heaters, both for hybrid. Without a smart meter, the simple estimates stay: boiler time at 70% of its input, heater time at its rated power.
+- Each day after midnight the meter total is shared out and logged; learned rates and the recent error are on the heating sensors and in diagnostics.
+- Card: the bottom shows only the heating's kWh and cost, with a flame for gas and a bolt for electricity (both for hybrid). The (i) next to it opens the breakdown: heating rows count, each item is a bullet, hot water and the hob are greyed and not counted, with subtotals per fuel, plus the total heating cost for hybrid. Any row opens its history.
+- Card: in the compact layout the expanded rooms sit inside the house outline (roof, walls and ground), as in the full layout. Roof, walls and ground share one line width and colour, the roof sits straight on the walls, and the lines between floors are thin and a little lighter.
+- Card: an open room's panel has a light highlight so it stands out.
+
 ## 0.10.3
 - Card: rooms in use show a small person icon (with an "In use" tooltip) instead of a blue dot, which was easy to confuse with the blue status dot for hot water priority.
 

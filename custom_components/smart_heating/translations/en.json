@@ -72,7 +72,7 @@
       },
       "energy": {
         "title": "Gas use and cost",
-        "description": "Do you have a smart meter integration (for example Octopus Energy or Glow)? Smart Heating shows gas used and its cost today as sensors you can open for history. Standing charges are left out: only what the heating uses counts.",
+        "description": "Do you have a smart meter integration (for example Octopus Energy or Glow)? Smart Heating shares the gas between heating, hot water and other use (the hob), learning your boiler's real rates from the meter over the days. Standing charges are left out: only what the heating uses counts.",
         "data": {
           "energy_source": "Gas data from"
         }
@@ -93,14 +93,46 @@
       },
       "energy_estimate": {
         "title": "Estimate from the boiler",
-        "description": "Gas is estimated while the boiler runs: from the boiler running sensor, or the heating switch or thermostat when there is none.",
+        "description": "Gas is estimated while the boiler runs: from the boiler running sensor, or the heating switch or thermostat when there is none. A modulating boiler burns about 70% of its input on average, so that is the starting rate.",
         "data": {
           "boiler_input_kw": "Boiler gas input",
           "gas_price": "Gas unit price"
         },
         "data_description": {
-          "boiler_input_kw": "From the boiler's data plate, for example 15 kW. The estimate assumes full input while it runs, so it reads high when the boiler modulates down.",
+          "boiler_input_kw": "From the boiler's data plate, for example 15 kW.",
           "gas_price": "Your unit rate in £/kWh, without the standing charge."
+        }
+      },
+      "electricity": {
+        "title": "Electricity use and cost",
+        "description": "Do you have a smart meter integration? Smart Heating learns each heater's real draw (for example a 2000 W heater in a half mode) from the meter, and shares the house's electricity between heating and everything else. Standing charges are left out.",
+        "data": {
+          "electricity_source": "Electricity data from"
+        }
+      },
+      "electricity_meter": {
+        "title": "Electricity smart meter",
+        "data": {
+          "electricity_meter": "Electricity consumption",
+          "electricity_rate": "Unit rate",
+          "electricity_power": "Live house power",
+          "electricity_price": "Fixed unit price"
+        },
+        "data_description": {
+          "electricity_meter": "A running total in kWh, for example Octopus \"current accumulative consumption (kWh)\". A total that restarts at midnight is fine.",
+          "electricity_rate": "Optional. A price sensor in £/kWh, for example Octopus \"current rate\". Each kWh is costed at the rate when it was used.",
+          "electricity_power": "Optional. Live house power, for example Octopus Home Mini \"current demand\". When a heater switches on or off, the jump in house power tells its real draw within minutes.",
+          "electricity_price": "Used when there's no unit rate sensor, or it is unavailable."
+        }
+      },
+      "electricity_estimate": {
+        "title": "Estimate from the heaters",
+        "description": "Electricity is worked out from each heater's on time and the power set in its room (and its eco power).",
+        "data": {
+          "electricity_price": "Electricity unit price"
+        },
+        "data_description": {
+          "electricity_price": "Your unit rate in £/kWh, without the standing charge."
         }
       },
       "rooms": {
@@ -379,6 +411,12 @@
         "heat_now": "Start heating now, learn in the background",
         "watch_first": "Watch first, start heating later"
       }
+    },
+    "electricity_source": {
+      "options": {
+        "smart_meter": "Smart meter integration",
+        "estimate": "No smart meter: estimate from the heaters"
+      }
     }
   },
   "entity": {
@@ -434,10 +472,10 @@
         "name": "House heat-loss time constant"
       },
       "gas_today": {
-        "name": "Gas today"
+        "name": "Heating gas today"
       },
       "gas_cost_today": {
-        "name": "Gas cost today"
+        "name": "Heating gas cost today"
       },
       "boiler_runtime_today": {
         "name": "Boiler runtime today"
@@ -467,16 +505,31 @@
         "name": "Heat retention"
       },
       "electric_today": {
-        "name": "Electricity today"
+        "name": "Heating electricity today"
       },
       "electric_cost_today": {
-        "name": "Electricity cost today"
+        "name": "Heating electricity cost today"
       },
       "energy_today": {
         "name": "Energy today"
       },
       "heater_power": {
         "name": "Heater power"
+      },
+      "hot_water_gas_today": {
+        "name": "Hot water gas today"
+      },
+      "other_gas_today": {
+        "name": "Other gas today"
+      },
+      "house_gas_today": {
+        "name": "House gas today"
+      },
+      "other_electricity_today": {
+        "name": "Other electricity today"
+      },
+      "house_electricity_today": {
+        "name": "House electricity today"
       }
     },
     "binary_sensor": {

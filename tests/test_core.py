@@ -565,3 +565,68 @@ def test_hybrid_single_room_uses_heater_instead_of_boiler():
     both = make_plan([(hyb, RoomSnapshot(temp=16.0, occupied=True, valve_open=False)), (gas, RoomSnapshot(temp=17.0, occupied=True, valve_open=False))],
                      _house(), Settings())
     assert both.boiler_on and both.rooms["h"].heater_on is False and both.rooms["h"].open_valve is True
+
+
+# ---------- consumption: meter split with learned rates ----------
+import random  # noqa: E402
+
+from core.consumption import Cost, DayRecord, fit, learn_step, meter_step  # noqa: E402
+
+GAS_PRIOR = {"heating": 10.5, "hot_water": 10.5, "cold": 0.0}
+GAS_BOUNDS = {"heating": (2.25, 18.0), "hot_water": (2.25, 18.0), "cold": (0.0, 7.5)}
+
+
+def _gas_days(n, seed=7, noise=0.8, hob=0.6, true=(12.0, 9.0, 2.0)):
+    rng, out = random.Random(seed), []
+    for i in range(n):
+        heat, hw, cf = rng.uniform(1, 6), rng.uniform(0.5, 1.5), rng.uniform(0, 1.2)
+        h = {"heating": heat, "hot_water": hw, "cold": heat * cf}
+        out.append(DayRecord(f"d{i}", true[0] * heat + true[1] * hw + true[2] * heat * cf + hob + rng.gauss(0, noise), h))
+    return out
+
+
+def test_fit_learns_the_boilers_real_rates_from_daily_totals():
+    r = fit(_gas_days(28), GAS_PRIOR, 0.5, GAS_BOUNDS, base_strength=30)
+    assert abs(r.rates["heating"] - 12) < 0.5 and abs(r.rates["cold"] - 2) < 0.5
+    assert abs(r.rates["hot_water"] - 9) < 0.8 and r.base < 1.2  # hot water runs ~1 h every day: hardest to separate
+    assert r.days == 28 and r.error < 0.05
+
+
+def test_fit_ignores_a_meter_glitch_day():
+    days = _gas_days(14)
+    days[5] = DayRecord("glitch", 180.0, days[5].hours)
+    r = fit(days, GAS_PRIOR, 0.5, GAS_BOUNDS, base_strength=30)
+    assert abs(r.rates["heating"] - 12) < 1.0, r.rates
+
+
+def test_fit_needs_a_few_days_before_moving_away_from_the_starting_values():
+    odd = [DayRecord("odd", 60.0, {"heating": 2.0, "hot_water": 1.0, "cold": 0.0})]
+    assert fit(odd, GAS_PRIOR, 0.5, GAS_BOUNDS, base_strength=30).rates == GAS_PRIOR
+    assert fit([], GAS_PRIOR, 0.5, GAS_BOUNDS).rates == GAS_PRIOR  # no meter: the starting values
+    r = fit(_gas_days(3), GAS_PRIOR, 0.5, GAS_BOUNDS, base_strength=30)
+    assert all(abs(r.rates[u] - GAS_PRIOR[u]) < 3 for u in ("heating", "hot_water")), r.rates
+
+
+def test_two_heaters_always_together_share_what_the_meter_shows():
+    # Two "2000 W" heaters in half mode: 2600 W with both on, 600 W of house load otherwise.
+    hours = [3, 5, 4, 6, 2, 5, 4, 3, 6, 2, 4, 5, 3, 6]  # two weeks
+    days = [DayRecord(f"d{i}", 2.0 * h + 14.4, {"a:full": h, "b:full": h}) for i, h in enumerate(hours)]
+    r = fit(days, {"a:full": 2.0, "b:full": 2.0}, 10.0, {"a:full": (0.5, 2.6), "b:full": (0.5, 2.6)}, strength=1.0, base_strength=0.5)
+    assert abs(r.rates["a:full"] - 1.0) < 0.25 and abs(r.rates["b:full"] - 1.0) < 0.25, r.rates
+
+
+def test_live_power_jumps_teach_a_heaters_real_draw():
+    kw = learn_step(None, 1010, rated_kw=2.0)  # 2 kW heater measured at about 1 kW (half mode)
+    assert kw == 1.01
+    assert learn_step(kw, 3500, rated_kw=2.0) == kw  # a kettle at the same moment: ignored
+    assert learn_step(kw, 990, rated_kw=2.0) == round(1.01 + 0.3 * (0.99 - 1.01), 3)
+
+
+def test_meter_restart_and_cost_at_the_rate_when_used():
+    st = meter_step(None, None, 0.0, 40.0)
+    for v in (41.0, 40.9, 42.0, 0.5, 1.5):
+        st = meter_step(*st, v)
+    start, last, carry = st
+    assert carry + last - start == 3.0
+    c = Cost()
+    assert c.add(10.0, 0.06) == 0.6 and c.add(15.0, 0.10) == 1.1 and c.add(15.0, 0.5) == 1.1

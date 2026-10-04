@@ -5,6 +5,7 @@ import asyncio
 import logging
 import re
 from collections import deque
+from functools import partial
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -40,6 +41,15 @@ from .const import (
     SOURCE_METER,
     SOURCE_ESTIMATE,
     CONF_START_MODE,
+    CONF_ELEC_SOURCE,
+    CONF_ELEC_METER,
+    CONF_ELEC_RATE,
+    CONF_ELEC_POWER,
+    GAS_FIRING_SHARE,
+    GAS_HOB_KWH,
+    COLD_BASE,
+    HOUSE_BASE_KWH,
+    STEP_SETTLE_S,
     START_WATCH,
     STARTUP_GRACE_MIN,
     BOILER_SILENT_MIN,
@@ -131,6 +141,7 @@ from .core import (
     make_plan,
 )
 from .core.learn import HEAT_NEEDED
+from .core.consumption import Cost, DayRecord, Rates, WINDOW_DAYS, fit, learn_step, meter_step, predict
 
 _LOGGER = logging.getLogger(__name__)
 _NUMBERS = re.compile(r"[-+]?\d+(?:\.\d+)?")
@@ -284,10 +295,32 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self.elec_kwh = 0.0
         self.elec_day: str | None = None
         self._elec_tick: datetime | None = None
-        self.gas_kwh: float | None = None
-        self.gas_measured = False
-        self.gas_cost: float | None = None
+        self.gas_kwh: float | None = None  # heating gas today (the main figure)
+        self.gas_measured = False  # a gas meter is reading
+        self.gas_cost: float | None = None  # heating gas cost today
         self.kwh_per_dd: float | None = None
+        # Splitting meters between uses (core/consumption.py).
+        self.gas_days: list[DayRecord] = []
+        self.gas_rates = Rates(self._gas_prior(), GAS_HOB_KWH)
+        self.gas_hw_kwh = 0.0
+        self.gas_other_kwh: float | None = None
+        self.gas_house_kwh: float | None = None
+        self.gas_yesterday: dict[str, Any] | None = None
+        self.elec_days: list[DayRecord] = []
+        self.elec_rates = Rates({}, HOUSE_BASE_KWH)
+        self.elec_hours: dict[str, float] = {}  # "<heater>:<mode>" -> hours today
+        self.elec_known = 0.0  # kWh today measured by heaters' own power sensors
+        self.elec_meter: tuple[float | None, float | None, float] = (None, None, 0.0)
+        self.elec_house_kwh: float | None = None
+        self.elec_other_kwh: float | None = None
+        self.elec_cost_today = Cost()
+        self.elec_price_now = self.elec_price
+        self.elec_yesterday: dict[str, Any] | None = None
+        self.step_kw: dict[str, float] = {}  # learned from live house power jumps
+        self._power_hist: deque[tuple[datetime, float]] = deque(maxlen=400)
+        self._heater_prev: dict[str, tuple[bool, str]] = {}
+        self._heater_changes: deque[tuple[datetime, str]] = deque(maxlen=60)
+        self._unsub_power = None
 
         # Decision log.
         self.log: deque[dict[str, Any]] = deque(maxlen=LOG_SIZE)
@@ -470,7 +503,14 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             "electric": {
                 "day": self.elec_day, "kwh": self.elec_kwh,
                 "rooms": {rid: [r.kwh_today, r.heater_min_today] for rid, r in self.rooms.items() if r.heaters},
+                "hours": self.elec_hours, "known": self.elec_known, "meter": list(self.elec_meter),
+                "cost": [self.elec_cost_today.cost, self.elec_cost_today.priced_kwh],
             },
+            "gas_days": [d.to_dict() for d in self.gas_days],
+            "elec_days": [d.to_dict() for d in self.elec_days],
+            "step_kw": self.step_kw,
+            "gas_yesterday": self.gas_yesterday,
+            "elec_yesterday": self.elec_yesterday,
         }
 
     async def _load(self) -> None:
@@ -496,6 +536,23 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             for rid, (kwh, mins) in (el.get("rooms") or {}).items():
                 if rid in self.rooms:
                     self.rooms[rid].kwh_today, self.rooms[rid].heater_min_today = float(kwh), float(mins)
+            self.elec_hours = {k: float(v) for k, v in (el.get("hours") or {}).items()}
+            self.elec_known = float(el.get("known", 0.0))
+            m = el.get("meter") or [None, None, 0.0]
+            self.elec_meter = (m[0], m[1], float(m[2] or 0.0))
+            c = el.get("cost") or [0.0, 0.0]
+            self.elec_cost_today = Cost(float(c[0]), float(c[1]))
+        for key, target in (("gas_days", self.gas_days), ("elec_days", self.elec_days)):
+            for d in data.get(key) or []:
+                try:
+                    target.append(DayRecord.from_dict(d))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        self.step_kw = {k: float(v) for k, v in (data.get("step_kw") or {}).items()}
+        self.gas_yesterday = data.get("gas_yesterday")
+        self.elec_yesterday = data.get("elec_yesterday")
+        self._refit_gas()
+        self._refit_elec()
         if data.get("setpoints"):
             try:
                 self.setpoints = Setpoints.from_dict(data["setpoints"])
@@ -603,10 +660,15 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             persistent_notification.async_create(self.hass, msg, title=title, notification_id=f"{DOMAIN}_welcome")
         self._check_setup()
         self._unsub = async_track_state_change_event(self.hass, list(tracked), self._on_change)
+        if self.house_cfg.get(CONF_ELEC_POWER):
+            self._unsub_power = async_track_state_change_event(self.hass, [self.house_cfg[CONF_ELEC_POWER]], self._on_power)
         await self.async_config_entry_first_refresh()
 
     async def async_stop(self) -> None:
         self._reset_one_cycle()
+        if self._unsub_power:
+            self._unsub_power()
+            self._unsub_power = None
         if self._unsub:
             self._unsub()
             self._unsub = None
@@ -1146,9 +1208,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 continue
             if not self._heater_entity_on(h):
                 continue
-            st = self._state(h)
-            eco = bool(st and "eco" in str(st.attributes.get("preset_mode") or "").lower())
-            total += room.heater_eco_w if eco and room.heater_eco_w else room.heater_w
+            total += self._heater_kw(room, h, self._heater_mode(self._state(h))) * 1000
         return round(total, 1)
 
     @property
@@ -1157,7 +1217,115 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
     @property
     def elec_cost(self) -> float:
-        return round(self.elec_kwh * self.elec_price, 2)
+        return round(self.elec_cost_today.cost, 2)
+
+    @property
+    def has_electric(self) -> bool:
+        return self.has_heaters or bool(self.house_cfg.get(CONF_ELEC_METER))
+
+    @property
+    def elec_source(self) -> str:
+        src = self.house_cfg.get(CONF_ELEC_SOURCE)
+        if src in (SOURCE_METER, SOURCE_ESTIMATE):
+            return src
+        return SOURCE_METER if self.house_cfg.get(CONF_ELEC_METER) else SOURCE_ESTIMATE
+
+    def _unit_price(self, entity: str | None, fixed: float) -> tuple[float, str]:
+        """(£/kWh, where from): a rate sensor when it reads (pence converted), else the fixed price."""
+        rate = self._float(entity)
+        if rate is not None:
+            unit = str((self._state(entity).attributes.get("unit_of_measurement") or "")).lower()
+            if unit.startswith("p/") or "pence" in unit:
+                rate /= 100
+            if 0 <= rate < 5:
+                return rate, "rate sensor"
+        return fixed, "fixed"
+
+    @staticmethod
+    def _heater_mode(st: State | None) -> str:
+        return "eco" if st is not None and "eco" in str(st.attributes.get("preset_mode") or "").lower() else "full"
+
+    def _heater_rated_kw(self, room: Room, mode: str) -> float:
+        if mode == "eco":
+            return (room.heater_eco_w or room.heater_w / 2) / 1000
+        return room.heater_w / 1000
+
+    def _heater_kw(self, room: Room, heater: str, mode: str) -> float:
+        """Real draw in kW: learned from the meter, else from live power jumps, else rated."""
+        key = f"{heater}:{mode}"
+        return self.elec_rates.rates.get(key) or self.step_kw.get(key) or self._heater_rated_kw(room, mode)
+
+    def _elec_prior(self) -> tuple[dict[str, float], dict[str, tuple[float, float]]]:
+        prior, bounds = {}, {}
+        for room in self.rooms.values():
+            for h in room.heaters:
+                if h in room.power_sensors:
+                    continue  # measured directly
+                full = self._heater_rated_kw(room, "full")
+                for mode in ("full", "eco"):
+                    key = f"{h}:{mode}"
+                    prior[key] = self.step_kw.get(key) or self._heater_rated_kw(room, mode)
+                    bounds[key] = (0.1 * full, 1.3 * full)
+        return prior, bounds
+
+    def _refit_elec(self) -> None:
+        prior, bounds = self._elec_prior()
+        if self.elec_source == SOURCE_METER:
+            self.elec_rates = fit(self.elec_days, prior, HOUSE_BASE_KWH, bounds, strength=1.0, base_strength=0.5)
+        else:
+            self.elec_rates = Rates(prior, HOUSE_BASE_KWH)
+
+    def _close_elec_day(self) -> None:
+        start, last, carry = self.elec_meter
+        total = round(carry + last - start, 3) if start is not None and last is not None and self.elec_source == SOURCE_METER else None
+        rec = DayRecord(self.elec_day, total, {k: round(v, 3) for k, v in self.elec_hours.items()}, round(self.elec_known, 3))
+        self.elec_days = (self.elec_days + [rec])[-(WINDOW_DAYS + 7):]
+        heaters = round(predict(self.elec_rates, rec) - self.elec_rates.base, 2)
+        self._refit_elec()
+        if total is not None and total > 0:
+            heating = min(heaters, total)
+            self.elec_yesterday = {"day": rec.day, "meter_kwh": total, "heating_kwh": round(heating, 2),
+                                   "other_kwh": round(total - heating, 2)}
+            self._log(f"Electricity {rec.day}: meter {total:.1f} kWh, heaters {heating:.1f}, rest of the house {total - heating:.1f}")
+
+    @callback
+    def _on_power(self, event: Event[EventStateChangedData]) -> None:
+        st = event.data["new_state"]
+        try:
+            w = float(st.state)
+        except (AttributeError, TypeError, ValueError):
+            return
+        if str(st.attributes.get("unit_of_measurement", "W")).lower() == "kw":
+            w *= 1000
+        self._power_hist.append((st.last_updated, w))
+
+    def _power_at(self, when: datetime, after: bool) -> float | None:
+        """House power just before `when` (latest reading at or before it), or the latest reading after it."""
+        if after:
+            later = [w for t, w in self._power_hist if t >= when]
+            return later[-1] if later else None
+        earlier = [w for t, w in self._power_hist if t <= when]
+        return earlier[-1] if earlier else None
+
+    @callback
+    def _check_step(self, room: Room, heater: str, mode: str, on: bool, when: datetime, _now: datetime) -> None:
+        """After a heater switched alone, its jump in house power tells its real draw."""
+        if any(h != heater and abs((t - when).total_seconds()) < STEP_SETTLE_S + 30 for t, h in self._heater_changes):
+            return  # another heater switched at about the same time
+        before = self._power_at(when, after=False)
+        after = self._power_at(when + timedelta(seconds=30), after=True)
+        if before is None or after is None:
+            return
+        jump = after - before if on else before - after
+        key = f"{heater}:{mode}"
+        old = self.step_kw.get(key)
+        new = learn_step(old, jump, self._heater_rated_kw(room, mode))
+        if new is None or new == old:
+            return
+        self.step_kw[key] = new
+        if old is None or abs(new - old) / old > 0.1:
+            self._log(f"Heater draw learned from house power: {new:.2f} kW ({mode})", room=room.cfg.name)
+        self._refit_elec()
 
     @property
     def elec_projected_kwh(self) -> float | None:
@@ -1166,26 +1334,61 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         return round(self.elec_kwh * 24 / hours, 2) if hours >= 1 else None
 
     def _account_electric(self, now: datetime) -> None:
-        if not self.has_heaters:
+        if not self.has_electric:
             return
         day = dt_util.as_local(now).date().isoformat()
         if self.elec_day != day:
-            self.elec_day, self.elec_kwh = day, 0.0
+            if self.elec_day:
+                self._close_elec_day()
+            self.elec_day, self.elec_kwh, self.elec_known, self.elec_hours = day, 0.0, 0.0, {}
+            self.elec_meter, self.elec_cost_today = (None, None, 0.0), Cost()
             for r in self.rooms.values():
                 r.kwh_today = r.heater_min_today = 0.0
+        meter_entity = self.house_cfg.get(CONF_ELEC_METER) if self.elec_source == SOURCE_METER else None
+        reading = self._float(meter_entity)
+        if reading is not None:
+            st = self._state(meter_entity)
+            if str(st.attributes.get("unit_of_measurement", "kWh")).lower() == "wh":
+                reading /= 1000
+            self.elec_meter = meter_step(*self.elec_meter, reading)
         last, self._elec_tick = self._elec_tick, now
-        if last is None:
-            return
-        hours = min((now - last).total_seconds() / 3600, 0.25)  # ignore gaps (restarts)
+        hours = min((now - last).total_seconds() / 3600, 0.25) if last else 0.0  # ignore gaps (restarts)
         for r in self.rooms.values():
-            if not r.heaters:
-                continue
-            w = self.heater_power_w(r)
-            kwh = w * hours / 1000
-            r.kwh_today = round(r.kwh_today + kwh, 4)
-            if w > 0:
-                r.heater_min_today += hours * 60
-            self.elec_kwh = round(self.elec_kwh + kwh, 4)
+            for h in r.heaters:
+                sensor = r.power_sensors.get(h)
+                measured = self._float(sensor) if sensor else None
+                if measured is not None:
+                    unit = str(self._state(sensor).attributes.get("unit_of_measurement", "W")).lower()
+                    kw = measured if unit == "kw" else measured / 1000
+                    self.elec_known += kw * hours
+                else:
+                    st = self._state(h)
+                    on, mode = self._heater_entity_on(h), self._heater_mode(st)
+                    prev = self._heater_prev.get(h)
+                    self._heater_prev[h] = (on, mode)
+                    if prev is not None and prev[0] != on and st is not None:
+                        when = st.last_updated
+                        self._heater_changes.append((when, h))
+                        if self._unsub_power:
+                            async_call_later(self.hass, STEP_SETTLE_S,
+                                             partial(self._check_step, r, h, mode if on else prev[1], on, when))
+                    if not on:
+                        continue
+                    key = f"{h}:{mode}"
+                    self.elec_hours[key] = self.elec_hours.get(key, 0.0) + hours
+                    kw = self._heater_kw(r, h, mode)
+                r.kwh_today = round(r.kwh_today + kw * hours, 4)
+                if kw > 0:
+                    r.heater_min_today += hours * 60
+        self.elec_kwh = round(sum(r.kwh_today for r in self.rooms.values()), 4)
+        start, last_m, carry = self.elec_meter
+        if meter_entity and start is not None and last_m is not None:
+            self.elec_house_kwh = round(carry + last_m - start, 2)
+            self.elec_other_kwh = round(max(0.0, self.elec_house_kwh - self.elec_kwh), 2)
+        else:
+            self.elec_house_kwh = self.elec_other_kwh = None
+        self.elec_price_now, _ = self._unit_price(self.house_cfg.get(CONF_ELEC_RATE) if self.elec_source == SOURCE_METER else None, self.elec_price)
+        self.elec_cost_today.add(self.elec_kwh, self.elec_price_now)
 
     @property
     def gas_source(self) -> str:
@@ -1197,14 +1400,34 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
     def _gas_unit_price(self) -> tuple[float, str]:
         """(£/kWh, where from): the rate sensor when it reads, else the fixed price."""
-        rate = self._float(self.house_cfg.get(CONF_GAS_RATE)) if self.gas_source == SOURCE_METER else None
-        if rate is not None:
-            unit = str((self._state(self.house_cfg.get(CONF_GAS_RATE)).attributes.get("unit_of_measurement") or "")).lower()
-            if unit.startswith("p/") or "pence" in unit:
-                rate /= 100
-            if 0 <= rate < 5:
-                return rate, "rate sensor"
-        return self.gas_price, "fixed"
+        return self._unit_price(self.house_cfg.get(CONF_GAS_RATE) if self.gas_source == SOURCE_METER else None, self.gas_price)
+
+    def _gas_prior(self) -> dict[str, float]:
+        kw = getattr(self, "boiler_kw", 15.0)
+        return {"heating": GAS_FIRING_SHARE * kw, "hot_water": GAS_FIRING_SHARE * kw, "cold": 0.0}
+
+    def _refit_gas(self) -> None:
+        kw = self.boiler_kw
+        bounds = {"heating": (0.15 * kw, 1.2 * kw), "hot_water": (0.15 * kw, 1.2 * kw), "cold": (0.0, 0.5 * kw)}
+        self.gas_rates = fit(self.gas_days, self._gas_prior(), GAS_HOB_KWH, bounds, strength=2.0, base_strength=30.0)
+
+    def _close_gas_day(self, day: EnergyDay, unit_m3: bool) -> None:
+        total, measured = day.gas_kwh(unit_m3, self.boiler_kw)
+        measured = measured and self.gas_source == SOURCE_METER
+        rec = DayRecord(day.day, total if measured else None, day.use_hours(COLD_BASE))
+        self.gas_days = (self.gas_days + [rec])[-(WINDOW_DAYS + 7):]
+        r = self.gas_rates
+        heat = r.kwh("heating", rec.hours["heating"]) + r.kwh("cold", rec.hours["cold"])
+        hw = r.kwh("hot_water", rec.hours["hot_water"])
+        model = heat + hw + r.base
+        self._refit_gas()
+        if measured and total > 0 and model > 0:
+            k = total / model  # the meter is the truth for the total; the model shares it out
+            self.gas_yesterday = {"day": rec.day, "meter_kwh": round(total, 2), "heating_kwh": round(heat * k, 2),
+                                  "hot_water_kwh": round(hw * k, 2), "other_kwh": round(r.base * k, 2),
+                                  "model_error": round(model / total - 1, 3)}
+            self._log(f"Gas {rec.day}: meter {total:.1f} kWh, heating {heat * k:.1f}, hot water {hw * k:.1f}, "
+                      f"other {r.base * k:.1f} (model {model / total - 1:+.0%})")
 
     def _account(self, now: datetime, house: HouseSnapshot, plan: Plan) -> None:
         self._account_electric(now)
@@ -1213,19 +1436,35 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         st = self._state(meter_entity)
         unit_m3 = bool(st and str(st.attributes.get("unit_of_measurement", "")).lower() in ("m³", "m3", "ft³"))
         firing, _ = self._firing(now)
+        heating_call = self._heating_demand() if self.boiler_control else plan.boiler_on
+        before = self.energy
         self.energy = self.energy.tick(
             now,
             dt_util.as_local(now).date(),
             firing,
             house.hw_calling,
-            plan.boiler_on,
+            heating_call,
             meter,
             self.outdoor.now_temp(now),
         )
-        self.gas_kwh, self.gas_measured = self.energy.gas_kwh(unit_m3, self.boiler_kw)
+        if self.energy is not before and before.day:
+            self._close_gas_day(before, unit_m3)
+        meter_kwh, measured = self.energy.gas_kwh(unit_m3, self.boiler_kw)
+        self.gas_measured = measured and self.gas_source == SOURCE_METER
+        hours, r = self.energy.use_hours(COLD_BASE), self.gas_rates
+        heat = round(r.kwh("heating", hours["heating"]) + r.kwh("cold", hours["cold"]), 2)
+        self.gas_hw_kwh = round(r.kwh("hot_water", hours["hot_water"]), 2)
+        if self.gas_measured:
+            self.gas_house_kwh = meter_kwh
+            self.gas_other_kwh = round(max(0.0, meter_kwh - heat - self.gas_hw_kwh), 2)
+        else:
+            local = dt_util.as_local(now)
+            self.gas_other_kwh = round(r.base * (local.hour + local.minute / 60) / 24, 2)
+            self.gas_house_kwh = None
+        self.gas_kwh = heat
         self.gas_price_now, self.gas_price_from = self._gas_unit_price()
-        self.gas_cost = self.energy.price(self.gas_kwh, self.gas_price_now)
-        self.kwh_per_dd = self.energy.kwh_per_degree_day(self.gas_kwh, self.settings.season_gate)
+        self.gas_cost = self.energy.price(heat, self.gas_price_now)
+        self.kwh_per_dd = self.energy.kwh_per_degree_day(heat, self.settings.season_gate)
 
     def _weather_temp(self, weather: str | None) -> float | None:
         """The weather entity's current temperature (used when there is no outdoor sensor)."""

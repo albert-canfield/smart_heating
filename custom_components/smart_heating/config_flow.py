@@ -41,6 +41,10 @@ from .const import (
     SOURCE_METER,
     SOURCE_ESTIMATE,
     CONF_START_MODE,
+    CONF_ELEC_SOURCE,
+    CONF_ELEC_METER,
+    CONF_ELEC_RATE,
+    CONF_ELEC_POWER,
     START_HEAT,
     START_MODES,
     CONF_AREA,
@@ -152,7 +156,8 @@ class _HouseSteps:
     """Step-by-step house questions, shared by setup and reconfigure.
 
     type -> boiler (gas types) -> thermostat (only if the boiler control is a thermostat)
-    -> hot_water (tank or hybrid) -> outside -> extras -> energy (gas types) -> rooms (setup only)
+    -> hot_water (tank or hybrid) -> outside -> extras -> energy (gas types) -> electricity
+    (electric or hybrid) -> rooms (setup only)
     """
 
     _data: dict[str, Any]
@@ -173,6 +178,9 @@ class _HouseSteps:
     async def async_step_type(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             self._data[CONF_HEATING_TYPE] = user_input[CONF_HEATING_TYPE]
+            if self._type not in (TYPE_ELECTRIC, TYPE_HYBRID):
+                for k in (CONF_ELEC_SOURCE, CONF_ELEC_METER, CONF_ELEC_RATE, CONF_ELEC_POWER):
+                    self._data.pop(k, None)
             if self._type == TYPE_ELECTRIC:
                 for k in (CONF_BOILER, CONF_BOILER_ON, CONF_THERMOSTAT_STYLE, CONF_HW_CALLING, CONF_HW_PRIORITY, CONF_HW_SYSTEM,
                           CONF_GAS_METER, CONF_GAS_RATE, CONF_ENERGY_SOURCE):
@@ -255,7 +263,7 @@ class _HouseSteps:
         if user_input is not None:
             self._keep(user_input, [CONF_ALARM, CONF_NIGHT_SCHEDULE])
             if self._type == TYPE_ELECTRIC:
-                return await self._finish_house()
+                return await self.async_step_electricity()
             return await self.async_step_energy()
         d = self._data
         fields = {
@@ -289,7 +297,7 @@ class _HouseSteps:
         if user_input is not None:
             self._keep(user_input, [CONF_GAS_METER, CONF_GAS_RATE])
             self._options[OPT_GAS_PRICE] = user_input[OPT_GAS_PRICE]
-            return await self._finish_house()
+            return await self._after_gas()
         d = self._data
         return self.async_show_form(
             step_id="energy_meter",
@@ -304,12 +312,60 @@ class _HouseSteps:
         if user_input is not None:
             self._options[OPT_BOILER_KW] = user_input[OPT_BOILER_KW]
             self._options[OPT_GAS_PRICE] = user_input[OPT_GAS_PRICE]
-            return await self._finish_house()
+            return await self._after_gas()
         return self.async_show_form(
             step_id="energy_estimate",
             data_schema=vol.Schema({
                 vol.Required(OPT_BOILER_KW, default=self._price(OPT_BOILER_KW, DEFAULT_BOILER_KW)): _num(1, 60, 0.5, "kW"),
                 vol.Required(OPT_GAS_PRICE, default=self._price(OPT_GAS_PRICE, DEFAULT_GAS_PRICE)): _num(0, 1, 0.001, "£/kWh"),
+            }),
+        )
+
+
+    async def _after_gas(self):
+        if self._type == TYPE_HYBRID:
+            return await self.async_step_electricity()
+        return await self._finish_house()
+
+    async def async_step_electricity(self, user_input: dict[str, Any] | None = None):
+        """Electricity use and cost: from a smart meter integration, or from the heaters' rated power."""
+        if user_input is not None:
+            self._data[CONF_ELEC_SOURCE] = user_input[CONF_ELEC_SOURCE]
+            if self._data[CONF_ELEC_SOURCE] == SOURCE_METER:
+                return await self.async_step_electricity_meter()
+            for k in (CONF_ELEC_METER, CONF_ELEC_RATE, CONF_ELEC_POWER):
+                self._data.pop(k, None)
+            return await self.async_step_electricity_estimate()
+        d = self._data
+        current = d.get(CONF_ELEC_SOURCE) or (SOURCE_METER if d.get(CONF_ELEC_METER) else SOURCE_ESTIMATE)
+        return self.async_show_form(
+            step_id="electricity", data_schema=vol.Schema(_select(CONF_ELEC_SOURCE, ENERGY_SOURCES, current, list_mode=True)),
+        )
+
+    async def async_step_electricity_meter(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            self._keep(user_input, [CONF_ELEC_METER, CONF_ELEC_RATE, CONF_ELEC_POWER])
+            self._options[OPT_ELEC_PRICE] = user_input[OPT_ELEC_PRICE]
+            return await self._finish_house()
+        d = self._data
+        return self.async_show_form(
+            step_id="electricity_meter",
+            data_schema=vol.Schema({
+                vol.Required(CONF_ELEC_METER, description={"suggested_value": d.get(CONF_ELEC_METER)}): _ent("sensor"),
+                _opt(CONF_ELEC_RATE, d): _ent("sensor"),
+                _opt(CONF_ELEC_POWER, d): _ent("sensor", device_class="power"),
+                vol.Required(OPT_ELEC_PRICE, default=self._price(OPT_ELEC_PRICE, DEFAULT_ELEC_PRICE)): _num(0, 2, 0.001, "£/kWh"),
+            }),
+        )
+
+    async def async_step_electricity_estimate(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            self._options[OPT_ELEC_PRICE] = user_input[OPT_ELEC_PRICE]
+            return await self._finish_house()
+        return self.async_show_form(
+            step_id="electricity_estimate",
+            data_schema=vol.Schema({
+                vol.Required(OPT_ELEC_PRICE, default=self._price(OPT_ELEC_PRICE, DEFAULT_ELEC_PRICE)): _num(0, 2, 0.001, "£/kWh"),
             }),
         )
 

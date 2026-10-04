@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.10.3"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.11.0"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -18,6 +18,10 @@ CONF_GAS_RATE = "gas_rate"
 CONF_ENERGY_SOURCE = "energy_source"
 SOURCE_METER, SOURCE_ESTIMATE = "smart_meter", "estimate"
 CONF_START_MODE = "start_mode"
+CONF_ELEC_SOURCE = "electricity_source"
+CONF_ELEC_METER = "electricity_meter"
+CONF_ELEC_RATE = "electricity_rate"
+CONF_ELEC_POWER = "electricity_power"  # live house power (W or kW), optional
 START_HEAT, START_WATCH = "heat_now", "watch_first"
 START_MODES = [START_HEAT, START_WATCH]
 ENERGY_SOURCES = [SOURCE_METER, SOURCE_ESTIMATE]
@@ -35,6 +39,12 @@ STYLE_RELAY, STYLE_SETPOINT = "relay", "setpoint"
 ALARM_AWAY_STATES = ("armed_away", "armed_vacation")
 
 FORECAST_REFRESH_MIN = 30
+# Consumption split (see core/consumption.py).
+GAS_FIRING_SHARE = 0.7  # a modulating boiler burns about this share of its input on average
+GAS_HOB_KWH = 0.5  # starting value for gas used with the boiler off (hob), per day
+COLD_BASE = 15.5  # heating runs harder below this outdoor mean
+HOUSE_BASE_KWH = 6.0  # starting value for the rest of the house's electricity, per day
+STEP_SETTLE_S = 90  # read house power this long after a heater switches
 FORECAST_RETRY_MIN = 5  # after a failed or empty fetch (e.g. the weather entity still starting)
 
 # Room (subentry data)
