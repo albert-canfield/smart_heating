@@ -9,7 +9,7 @@ from enum import Enum
 class Mode(str, Enum):
     OFF = "off"
     ONE_CYCLE = "one_cycle"
-    CONTINUOUS = "continuous"
+    AUTO = "auto"
 
 
 class Level(str, Enum):

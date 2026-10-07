@@ -1,0 +1,148 @@
+<!doctype html>
+<!-- README cover: the real card with a mock house. Rendered by docs/render.py. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Smart Heating cover</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --card-background-color: #1d1f24;
+    --ha-card-background: #1d1f24;
+    --primary-text-color: #e6e8eb;
+    --secondary-text-color: #9aa0a8;
+    --primary-color: #4aa8ff;
+    --divider-color: rgba(230, 232, 235, .12);
+    --warning-color: #f5a524;
+    --error-color: #ef5350;
+    --disabled-text-color: #6b7078;
+    --ha-card-border-radius: 18px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1200px; height: 570px; overflow: hidden; }
+  body {
+    font-family: Inter, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: #f2f4f7; -webkit-font-smoothing: antialiased;
+    background:
+      radial-gradient(620px 420px at 1040px 40px, rgba(255, 120, 60, .22), transparent 70%),
+      radial-gradient(560px 380px at 120px 600px, rgba(61, 139, 255, .22), transparent 70%),
+      radial-gradient(500px 300px at 820px 600px, rgba(74, 168, 255, .10), transparent 70%),
+      linear-gradient(160deg, #111a2c 0%, #0c1220 55%, #0a0f1a 100%);
+  }
+  .left { position: absolute; left: 82px; top: 92px; width: 620px; }
+  .brand { display: flex; align-items: center; gap: 14px; font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
+  .brand .tile { width: 44px; height: 44px; border-radius: 12px; background: #101826; display: grid; place-items: center;
+                 box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 8px 24px rgba(0,0,0,.35); }
+  .brand svg { width: 30px; height: 30px; }
+  .new { display: inline-flex; align-items: center; gap: 10px; margin: 26px 0 0; padding: 5px 14px 5px 5px; border-radius: 999px;
+         font-size: 13px; color: #c9d4e3; background: rgba(74, 168, 255, .10); border: 1px solid rgba(74, 168, 255, .28); }
+  .new b { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: #0b1220; background: #6cb8ff; padding: 3px 9px; border-radius: 999px; }
+  h1 { margin: 16px 0 0; font-size: 50px; line-height: 1.02; font-weight: 800; letter-spacing: -.035em; }
+  h1 span { background: linear-gradient(90deg, #ff6b3d 0%, #ffb547 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  p.sub { margin: 18px 0 0; font-size: 17px; line-height: 1.55; color: #aeb7c4; max-width: 560px; }
+  .feats { display: flex; gap: 22px; margin: 22px 0 0; font-size: 13.5px; color: #d5dce6; }
+  .feats span { display: inline-flex; align-items: center; gap: 8px; }
+  .feats svg { width: 18px; height: 18px; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 0; }
+  .chips span { padding: 7px 14px; border-radius: 999px; font-size: 13px; color: #dfe5ee;
+                background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .12); }
+
+  .phone { position: absolute; left: 812px; top: 52px; width: 336px; height: 600px; border-radius: 46px; padding: 11px;
+           background: #0b0d12; box-shadow: 0 0 0 1.5px #2a2e37, 0 0 0 6px #14171d, 0 30px 80px rgba(0,0,0,.55); }
+  .screen { position: relative; width: 100%; height: 100%; border-radius: 36px; overflow: hidden; background: #0f1115; padding: 46px 10px 0; }
+  .island { position: absolute; top: 11px; left: 50%; transform: translateX(-50%); width: 96px; height: 27px; border-radius: 20px; background: #000; }
+  .status { position: absolute; top: 15px; left: 28px; right: 24px; display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: #f2f4f7; }
+  smart-heating-card { display: block; zoom: .8; }
+
+  .push { position: absolute; left: 676px; top: 368px; width: 318px; padding: 12px 14px; border-radius: 18px; z-index: 5;
+          background: rgba(36, 40, 48, .78); backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%);
+          border: 1px solid rgba(255,255,255,.10); box-shadow: 0 18px 50px rgba(0,0,0,.45); display: grid; grid-template-columns: 34px 1fr; gap: 0 11px; }
+  .push .ic { width: 34px; height: 34px; border-radius: 9px; overflow: hidden; grid-row: span 2; }
+  .push .ic svg { width: 34px; height: 34px; display: block; }
+  .push .hd { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 600; color: #f2f4f7; }
+  .push .hd time { font-weight: 400; color: #9aa3b0; }
+  .push .msg { font-size: 12.5px; line-height: 1.38; color: #d9dee6; margin-top: 2px; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="brand"><span class="tile" id="logo"></span>Smart Heating</div>
+    <div class="new"><b>NEW</b>Window and humidity advice, alerts for whoever is home</div>
+    <h1>Turn your heating into a<br><span>smart, multizone system.</span></h1>
+    <p class="sub">It learns how your home holds heat, reads the forecast and heats each room only when it is worth it.
+      It even tells you when a short airing will dry the house.</p>
+    <div class="feats">
+      <span><svg viewBox="0 0 24 24" stroke="#ffb547"><path d="M12 3v3M12 18v3M4.6 6.6l2.1 2.1M17.3 15.3l2.1 2.1M3 12h3M18 12h3M4.6 17.4l2.1-2.1M17.3 8.7l2.1-2.1"/><circle cx="12" cy="12" r="3.2"/></svg>Learns every room</span>
+      <span><svg viewBox="0 0 24 24" stroke="#6cb8ff"><path d="M12 3.5c3 4 5.5 6.8 5.5 10a5.5 5.5 0 0 1-11 0c0-3.2 2.5-6 5.5-10z"/></svg>Tackles damp</span>
+      <span><svg viewBox="0 0 24 24" stroke="#ff8a5c"><path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.2 1.2-3.6 2.4-4.6.2 1.6 1 2.6 2.1 3C11 8.8 11.4 5.6 12 3z"/></svg>Burns less gas</span>
+    </div>
+    <div class="chips"><span>Gas boilers</span><span>Combi</span><span>Electric heaters</span><span>Hybrid</span><span>Smart TRVs</span></div>
+  </div>
+
+  <div class="push">
+    <span class="ic" id="pushlogo"></span>
+    <div class="hd"><span>Smart Heating</span><time>now</time></div>
+    <div class="msg">Open the windows wide for 10 min in Ensuite: it is at 78% and the air outside is much drier.</div>
+  </div>
+
+  <div class="phone"><div class="screen">
+    <div class="island"></div>
+    <div class="status"><span>9:41</span><span>5G</span></div>
+    <smart-heating-card id="card"></smart-heating-card>
+  </div></div>
+
+<script src="../custom_components/smart_heating/frontend/smart-heating-card.js"></script>
+<script>
+  const BRAND = '<svg viewBox="0 0 256 256"><rect width="256" height="256" rx="58" fill="#101826"/><path d="M128 50L206 112V118H50V112Z" fill="#FF6B3D"/><path d="M50 126H206V160H50Z" fill="#FFB547"/><path d="M50 168H206V206H50Z" fill="#3D8BFF"/></svg>';
+  document.getElementById("logo").innerHTML = BRAND;
+  document.getElementById("pushlogo").innerHTML = BRAND;
+
+  const hass = { states: {}, entities: {}, devices: {}, callService: async () => {} };
+  const add = (dev, id, state, attributes = {}) => {
+    hass.states[id] = { entity_id: id, state: String(state), attributes };
+    hass.entities[id] = { platform: "smart_heating", device_id: dev };
+  };
+  hass.devices.house = { name: "Smart Heating" };
+  add("house", "sensor.smart_heating_status", "heating", { reason: "3 rooms", boiler_demand: true, boiler_firing: true, has_boiler: true,
+    hot_water: false, night: false, away: false, open_rooms: ["living", "kitchen", "master"], heater_rooms: [] });
+  add("house", "sensor.smart_heating_house_temperature", "19.4", { kind: "house_temperature" });
+  add("house", "sensor.smart_heating_outdoor_day_mean", "8.6", { kind: "outdoor_day_mean", now: 7.9 });
+  [[0, 18.1], [1, 18.9], [2, 19.1]].forEach(([f, t]) => add("house", `sensor.smart_heating_floor_${f}`, t, { kind: "floor_temperature", floor: f }));
+  add("house", "select.smart_heating_mode", "auto", { options: ["off", "one_cycle", "auto"] });
+  add("house", "switch.smart_heating_monitor_only", "off", {});
+  add("house", "number.smart_heating_house_target", "19.0", { kind: "house_target", baseline_day: 17, baseline_night: 15, safety: 12 });
+  add("house", "sensor.smart_heating_calibration", "100", { kind: "calibration", calibrated: true, available: true });
+  add("house", "sensor.smart_heating_window_advice", "open", { kind: "window_advice", advice: "dry", minutes: 10, rooms: ["Ensuite"],
+    reason: "Open the windows wide for 10 min in Ensuite: it is at 78% and the air outside is much drier (dew point 6° vs 14°). Fine in light rain: open on the sheltered side." });
+  add("house", "sensor.smart_heating_house_heat_retention", "54", { kind: "heat_retention", scope: "house", grade: "D" });
+
+  const rooms = [
+    ["bath", "Bathroom", 2, 18.9, "idle"], ["bed2", "Bedroom 2", 2, 18.8, "idle"], ["bed3", "Bedroom 3", 2, 19.4, "idle"],
+    ["ensuite", "Ensuite", 2, 18.2, "idle"], ["land2", "Landing", 2, 20.3, "idle"], ["master", "Master bedroom", 2, 19.1, "approved", true],
+    ["kitchen", "Kitchen", 1, 18.8, "approved", true], ["land1", "Landing", 1, 19.6, "idle"], ["living", "Living room", 1, 18.2, "approved", true],
+    ["hall", "Hall", 0, 17.6, "idle"], ["utility", "Utility", 0, 17.9, "idle"],
+  ];
+  for (const [id, name, floor, temp, verdict, occupied] of rooms) {
+    hass.devices[id] = { name };
+    add(id, `sensor.${id}_need`, occupied ? "comfort" : "baseline", { floor, priority: "a", temperature: temp, target: occupied ? 19 : 17,
+      comfort: 19, trend: occupied ? 0.9 : -0.1, occupied: !!occupied, has_trv: true, deficit: occupied ? 19 - temp : 0,
+      temperature_entity: `sensor.${id}_t`, temperature_source: "sensor" });
+    add(id, `sensor.${id}_decision`, verdict, { valve_command: verdict === "approved", reason: occupied ? "heating: occupied" : "at baseline" });
+    add(id, `select.${id}_override`, "auto", {});
+    add(id, `number.${id}_target`, "19.0", { kind: "room_target", vs_house: 0 });
+    add(id, `sensor.${id}_tau`, "61", { kind: "heat_loss_tau", free_heat_gain: 5.2, calibration: 100 });
+    add(id, `sensor.${id}_warm`, "1.3", { kind: "warm_up_rate" });
+    add(id, `sensor.${id}_pred`, "17.9", { kind: "predicted_2h", predicted_8h: 17.3, hours_to_baseline: 11.5 });
+    add(id, `sensor.${id}_ret`, "65", { kind: "heat_retention", grade: "C", rating: "good", settled: true, tau_low: 52, tau_high: 70, grade_range: "C" });
+  }
+  hass.states["sensor.living_t"] = { entity_id: "sensor.living_t", state: "18.2", attributes: { friendly_name: "Living room thermometer" } };
+
+  const card = document.getElementById("card");
+  card.setConfig({});
+  card._expanded = true;
+  card._open = "Living room";
+  card.hass = hass;
+</script>
+</body>
+</html>

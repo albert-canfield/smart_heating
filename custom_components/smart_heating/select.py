@@ -26,9 +26,10 @@ class ModeSelect(HouseEntity, SelectEntity, RestoreEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         last = await self.async_get_last_state()
+        state = {"continuous": Mode.AUTO.value}.get(last.state, last.state) if last else None  # renamed in 0.12.0
         # A new setup ignores what an earlier one with the same entity id left behind.
-        if last and last.state in self._attr_options and not self.coordinator.fresh:
-            await self.coordinator.async_set_mode(Mode(last.state), restoring=True)
+        if state in self._attr_options and not self.coordinator.fresh:
+            await self.coordinator.async_set_mode(Mode(state), restoring=True)
 
     @property
     def current_option(self) -> str:

@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.11.0"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.12.0"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -11,6 +11,7 @@ CONF_BOILER_ON = "boiler_on_sensor"
 CONF_HW_CALLING = "hw_calling"
 CONF_OUTDOOR_MEAN = "outdoor_mean"
 CONF_OUTDOOR_TEMP = "outdoor_temperature"
+CONF_OUTDOOR_HUMIDITY = "outdoor_humidity"
 CONF_WEATHER = "weather"
 CONF_NIGHT_SCHEDULE = "night_schedule"
 CONF_GAS_METER = "gas_meter"
@@ -86,7 +87,10 @@ OPT_KEYS = [
 OPT_OVERRIDE_HOURS = "override_hours"
 OPT_GAS_PRICE = "gas_price"
 OPT_BOILER_KW = "boiler_input_kw"
-OPT_NOTIFY = "notify_service"
+OPT_NOTIFY = "notify_service"  # extra notify services (list; older versions: one string)
+OPT_NOTIFY_PEOPLE = "notify_people"  # people whose phone app gets alerts
+OPT_WINDOW_ALERTS = "window_alerts"  # phone alerts to open or close windows
+WINDOW_PUSH_MAX = 8  # window alerts per 24 h at most
 OPT_NIGHT_START = "night_start"
 OPT_NIGHT_END = "night_end"
 DEFAULT_NIGHT_START = "22:00:00"
@@ -130,3 +134,16 @@ BOILER_FLAP_WINDOW_MIN = 30
 BOILER_FLAP_MAX = 6  # more switches than this in the window locks boiler control
 BOILER_LOCK_MIN = 30
 EXTERNAL_HOLD_MIN = 15  # after something else switched the boiler, don't switch it back on for this long
+
+
+def window_alerts_default(options) -> bool:
+    """On for new setups; off for an upgrade with only an older single notify service, which is
+    not tied to a person and would get window alerts away from home."""
+    return not (isinstance(options.get(OPT_NOTIFY), str) and options.get(OPT_NOTIFY) and not options.get(OPT_NOTIFY_PEOPLE))
+
+
+def notify_list(value) -> list[str]:
+    """Notify services as a list of 'notify.x' (older versions stored one string)."""
+    items = value.split(",") if isinstance(value, str) else list(value or [])
+    out = [str(v).strip() for v in items if str(v).strip()]
+    return [v if "." in v else f"notify.{v}" for v in out]

@@ -51,11 +51,13 @@
         "description": "Used to skip heating on mild days, predict tonight and learn how your house holds heat. One of the two is enough.",
         "data": {
           "weather": "Weather forecast",
-          "outdoor_temperature": "Outdoor thermometer"
+          "outdoor_temperature": "Outdoor thermometer",
+          "outdoor_humidity": "Outdoor humidity"
         },
         "data_description": {
           "weather": "Your weather integration, e.g. weather.forecast_home.",
-          "outdoor_temperature": "Optional: a real outdoor sensor. Without one, the weather entity's current temperature is used."
+          "outdoor_temperature": "Optional: a real outdoor sensor. Without one, the weather entity's current temperature is used.",
+          "outdoor_humidity": "Optional: for window advice (drying the house). Without one, the weather entity's humidity is used."
         }
       },
       "extras": {
@@ -144,7 +146,7 @@
         },
         "data_description": {
           "areas": "Untick areas you don't want heated. Gardens are skipped.",
-          "start_mode": "Smart Heating learns how each room holds heat in the background either way (1 to 3 days). Watch first: it only decides and logs until you tap Start heating on the card."
+          "start_mode": "Smart Heating learns how each room holds heat in the background either way (steady results in about 4 days to 3 weeks). Watch first: it only decides and logs until you tap Start heating on the card."
         }
       }
     },
@@ -163,6 +165,7 @@
         "menu_options": {
           "temperatures": "Temperatures & Night",
           "prices": "Energy Prices",
+          "notifications": "Notifications",
           "import_areas": "Import Rooms From Areas",
           "relearn": "Relearn Rooms",
           "advanced": "Advanced"
@@ -225,6 +228,20 @@
           "electricity_price": "For electric heater costs, without the standing charge."
         }
       },
+      "notifications": {
+        "title": "Notifications",
+        "description": "Who gets phone alerts: learning finished, boiler problems and window advice.",
+        "data": {
+          "notify_people": "People",
+          "notify_service": "Other notify services",
+          "window_alerts": "Window alerts"
+        },
+        "data_description": {
+          "notify_people": "Alerts go to the Home Assistant app on each person's phone. Window advice only goes to people who are at home at the time.",
+          "notify_service": "Optional: other targets, e.g. a wall tablet or a Telegram chat. They get every alert, home or not.",
+          "window_alerts": "When opening the windows briefly would dry the house, or cool it on a hot day, and when to close them again. Never at night, at most 8 a day."
+        }
+      },
       "advanced": {
         "title": "Advanced",
         "description": "Defaults suit most homes.",
@@ -238,7 +255,6 @@
           "trv_open_offset": "TRV open offset",
           "trv_closed": "TRV closed setpoint",
           "hw_max_pause_min": "Hot water max pause",
-          "notify_service": "Notify service (e.g. notify.mobile_app_phone)",
           "mild_margin": "Mild-day margin"
         },
         "data_description": {
@@ -251,7 +267,6 @@
           "trv_open_offset": "Open TRV = target plus this. Caps the room if HA stops.",
           "trv_closed": "Closed TRV setpoint.",
           "hw_max_pause_min": "Longest heating pauses for hot water.",
-          "notify_service": "Phone notification when learning finishes, e.g. notify.mobile_app_phone.",
           "mild_margin": "On days above the season gate, a room in use heats by itself only when it is this far below its target and not warming on its own."
         }
       }
@@ -498,6 +513,14 @@
       "decision_log": {
         "name": "Decision log"
       },
+      "window_advice": {
+        "name": "Window advice",
+        "state": {
+          "open": "Open windows",
+          "close": "Close windows",
+          "none": "No advice"
+        }
+      },
       "house_heat_retention": {
         "name": "House heat retention"
       },
@@ -549,7 +572,7 @@
         "state": {
           "off": "Off",
           "one_cycle": "One Cycle",
-          "continuous": "Continuous"
+          "auto": "Auto"
         }
       },
       "override": {

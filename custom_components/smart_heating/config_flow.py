@@ -32,6 +32,7 @@ from .const import (
     CONF_MEDIA,
     CONF_NAME,
     CONF_NIGHT_SCHEDULE,
+    CONF_OUTDOOR_HUMIDITY,
     CONF_OUTDOOR_TEMP,
     CONF_WEATHER,
     CONF_GAS_METER,
@@ -76,6 +77,9 @@ from .const import (
     OPT_BOILER_KW,
     OPT_GAS_PRICE,
     OPT_NOTIFY,
+    OPT_NOTIFY_PEOPLE,
+    notify_list,
+    OPT_WINDOW_ALERTS,
     OPT_NIGHT_START,
     OPT_NIGHT_END,
     DEFAULT_NIGHT_START,
@@ -248,7 +252,7 @@ class _HouseSteps:
 
     async def async_step_outside(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            self._keep(user_input, [CONF_WEATHER, CONF_OUTDOOR_TEMP])
+            self._keep(user_input, [CONF_WEATHER, CONF_OUTDOOR_TEMP, CONF_OUTDOOR_HUMIDITY])
             return await self.async_step_extras()
         d = self._data
         return self.async_show_form(
@@ -256,6 +260,7 @@ class _HouseSteps:
             data_schema=vol.Schema({
                 _opt(CONF_WEATHER, d): _ent("weather"),
                 _opt(CONF_OUTDOOR_TEMP, d): _ent("sensor", device_class="temperature"),
+                _opt(CONF_OUTDOOR_HUMIDITY, d): _ent("sensor", device_class="humidity"),
             }),
         )
 
@@ -440,7 +445,7 @@ class SmartHeatingOptionsFlow(OptionsFlow):
         return _legacy_type(dict(self.config_entry.data))
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        return self.async_show_menu(step_id="init", menu_options=["temperatures", "prices", "import_areas", "relearn", "advanced"])
+        return self.async_show_menu(step_id="init", menu_options=["temperatures", "prices", "notifications", "import_areas", "relearn", "advanced"])
 
     def _save(self, user_input: dict[str, Any]) -> ConfigFlowResult:
         return self.async_create_entry(data={**self.config_entry.options, **user_input})
@@ -523,8 +528,24 @@ class SmartHeatingOptionsFlow(OptionsFlow):
             fields[vol.Required("trv_closed", default=v("trv_closed", d.trv_closed))] = _num(5, 16, 1, "°C")
         if self._type in (TYPE_TANK, TYPE_HYBRID):
             fields[vol.Required("hw_max_pause_min", default=v("hw_max_pause_min", d.hw_max_pause_min))] = _num(0, 120, 5, "min")
-        fields[vol.Optional(OPT_NOTIFY, description={"suggested_value": v(OPT_NOTIFY, None)})] = sel.TextSelector()
         return self.async_show_form(step_id="advanced", data_schema=vol.Schema(fields))
+
+    async def async_step_notifications(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            # A cleared field is left out of the answer: store it as empty, not as the old value.
+            return self._save({OPT_NOTIFY_PEOPLE: [], OPT_NOTIFY: [], **user_input})
+        current = notify_list(self._v(OPT_NOTIFY, None))
+        usable = (s for s in self.hass.services.async_services().get("notify", {})
+                  if s not in ("send_message", "persistent_notification"))  # send_message needs a notify entity
+        services = sorted({f"notify.{s}" for s in usable} | set(current))
+        return self.async_show_form(step_id="notifications", data_schema=vol.Schema({
+            vol.Optional(OPT_NOTIFY_PEOPLE, description={"suggested_value": self._v(OPT_NOTIFY_PEOPLE, [])}):
+                _ent("person", multiple=True),
+            vol.Optional(OPT_NOTIFY, description={"suggested_value": current}): sel.SelectSelector(
+                sel.SelectSelectorConfig(options=services, multiple=True, custom_value=True,
+                                         mode=sel.SelectSelectorMode.DROPDOWN)),
+            vol.Required(OPT_WINDOW_ALERTS, default=bool(self._v(OPT_WINDOW_ALERTS, True))): sel.BooleanSelector(),
+        }))
 
     async def async_step_import_areas(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         entry = self.config_entry

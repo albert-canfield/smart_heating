@@ -40,6 +40,14 @@ def grade(tau: float | None) -> str | None:
     return "G"
 
 
+def grade_range(lo: float | None, hi: float | None) -> str | None:
+    """Grades across a tau range, best first: "D-E", or one grade when both ends agree."""
+    if lo is None or hi is None:
+        return None
+    best, worst = grade(hi), grade(lo)
+    return best if best == worst else f"{best}-{worst}"
+
+
 def loss_per_hour(tau: float | None, delta: float = 10.0) -> float | None:
     """Initial temperature drop per hour when it is `delta` degrees colder outside."""
     if tau is None or tau <= 0:

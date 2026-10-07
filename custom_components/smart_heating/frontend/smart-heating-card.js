@@ -21,12 +21,12 @@ const STATE_LABEL = {
 
 const FLOOR_NAME = { 0: "Ground", 1: "1st", 2: "2nd", 3: "3rd" };
 
-const MODE_LABEL = { off: "Off", one_cycle: "One cycle", continuous: "Continuous" };
+const MODE_LABEL = { off: "Off", one_cycle: "One cycle", auto: "Auto" };
 
 const MODE_TIP = {
   off: "Stops everything: One Cycle, Heat now and the boiler. Frost protection stays on",
   one_cycle: "Heats the rooms in use, or ones you pick, once, then switches itself off",
-  continuous: "Keeps every room at its target, firing the boiler only when it's worth it",
+  auto: "Heats each room when it needs it, firing the boiler only when it's worth it",
 };
 
 const ICON_INFO = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.5v.5"/></svg>';
@@ -65,13 +65,14 @@ const SPIN = '<svg class="spin" viewBox="0 0 24 24" aria-hidden="true"><circle c
 
 const ICON_PERSON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="3.6"/><path d="M4.8 20.5c0-4 3.2-7 7.2-7s7.2 3 7.2 7z"/></svg>';
 const ICON_BOLT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4.5 13.5H11L10 22l8.5-11.5H12z"/></svg>';
+const ICON_WINDOW = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="1.5"/><path d="M12 3.5v17M5 12h14"/></svg>';
 const ICON_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
 const ICON_FLAME = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.2 1.2-3.6 2.4-4.6.2 1.6 1 2.6 2.1 3C11 8.8 11.4 5.6 12 3z"/></svg>';
 
 const MODE_ICON = {
   off: '<path d="M12 3v8"/><path d="M6.6 6.6a7.5 7.5 0 1 0 10.8 0"/>',
   one_cycle: '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v4h-4"/><path d="M11 10.5l1.5-1v6"/>',
-  continuous: '<path d="M8 8.5a3.5 3.5 0 1 0 0 7c2.6 0 5.4-7 8-7a3.5 3.5 0 1 1 0 7c-2.6 0-5.4-7-8-7z"/>',
+  auto: '<path d="M5.5 19.5L12 4.5l6.5 15"/><path d="M8.2 13.5h7.6"/>',
 };
 
 function modeBar(current) {
@@ -108,6 +109,7 @@ class SmartHeatingCard extends HTMLElement {
     this._showLog = false;
     this._expanded = false;
     this._calOpen = false;
+    this._winOpen = false;
     this._tip = null;
     this._energyOpen = false;
     this._pending = {};
@@ -186,6 +188,7 @@ class SmartHeatingCard extends HTMLElement {
           else if (s.attributes.kind === "other_gas_today") house.otherGas = s;
           else if (s.attributes.kind === "other_electricity_today") house.otherElec = s;
           else if (s.attributes.kind === "decision_log") house.log = s;
+          else if (s.attributes.kind === "window_advice") house.windows = s;
           else if (s.attributes.kind === "heat_retention" && s.attributes.scope === "house") house.retention = s;
           else if (s.attributes.kind === "floor_temperature") (house.floors = house.floors || {})[s.attributes.floor] = s;
           else if (s.entity_id.startsWith("select.") && s.attributes.options?.includes("one_cycle")) house.mode = s;
@@ -234,6 +237,10 @@ class SmartHeatingCard extends HTMLElement {
         calibration: tau?.attributes.calibration,
         warmup: num(warm?.state),
         grade: ret?.attributes.grade,
+        gradeRange: ret?.attributes.grade_range,
+        settled: ret?.attributes.settled,
+        tauLow: ret?.attributes.tau_low,
+        tauHigh: ret?.attributes.tau_high,
         rating: ret?.attributes.rating,
         retScore: num(ret?.state),
         pred2: num(pred?.state),
@@ -265,6 +272,9 @@ class SmartHeatingCard extends HTMLElement {
       calPct: num(house.cal?.state),
       calPhase: house.cal?.attributes.learning_now,
       cal: house.cal?.attributes || {},
+      win: house.windows && house.windows.state !== "none" && house.windows.state !== "unavailable"
+        ? { action: house.windows.state, reason: house.windows.attributes.reason, minutes: house.windows.attributes.minutes,
+            advice: house.windows.attributes.advice } : null,
       calAvailable: house.cal ? house.cal.attributes.available !== false : false,
       heatTest: house.cal?.attributes.heat_test_min_left ?? null,
       target: num(house.target?.state),
@@ -384,6 +394,18 @@ class SmartHeatingCard extends HTMLElement {
     return "";
   }
 
+  _winBadge(d) {
+    if (!d.win) return "";
+    const open = d.win.action === "open";
+    const label = open ? `Open windows${d.win.advice === "dry" && d.win.minutes ? ` ${d.win.minutes} min` : ""}` : "Close windows";
+    return `<button class="badge win ${open ? "open" : "close"}" data-win aria-expanded="${this._winOpen}" title="${esc(d.win.reason || "")}">${ICON_WINDOW}${label}</button>`;
+  }
+
+  _winBox(d) {
+    if (!d.win || !this._winOpen || !d.win.reason) return "";
+    return `<div class="winbox" role="status">${esc(d.win.reason)}</div>`;
+  }
+
   _ready(d) {
     if (!d.monitor || d.heatTest != null) return "";
     if (this._confirmStart) {
@@ -418,12 +440,19 @@ class SmartHeatingCard extends HTMLElement {
       const pct = need ? Math.min(100, Math.round((have / need) * 100)) : 0;
       return `<span class="bar" aria-hidden="true"><i style="width:${pct}%"></i></span>`;
     };
-    const row = (key, label, have, need, unit, tip) => `
+    const row = (key, label, have, need, unit, tip, text) => `
       <div class="need-row ${have >= need ? "done" : ""}">
         <span>${esc(label)}${this._info(key)}</span>
         ${bar(have, need)}
-        <span class="val">${have >= need ? ICON_CHECK : `${fmtN(have)} of ${fmtN(need)}${unit}`}</span>
+        <span class="val">${have >= need ? ICON_CHECK : text || `${fmtN(have)} of ${fmtN(need)}${unit}`}</span>
       </div>${this._tipBox(key, tip)}`;
+    const errNeed = c.uncertainty_needed_pct ?? 25;
+    const steady = c.uncertainty_pct == null
+      ? row("steady", "Steady result", c.cooling_days ?? 0, c.cooling_days_needed ?? 4, " days",
+          "Tested by refitting with one group of days left out at a time: the answer must barely move. Needs cooling data from 4 different days first.")
+      : row("steady", "Steady result", Math.min(errNeed, (errNeed * errNeed) / Math.max(c.uncertainty_pct, 1)), errNeed, "",
+          `Tested by refitting with one group of days left out at a time: the answer must barely move. Needs ±${errNeed}% or better. Times with a shower, cooking or sun are left out, so this can take a week or two.`,
+          `${c.uncertainty_pct > 100 ? "over ±100%" : `±${c.uncertainty_pct}%`} (needs ±${errNeed}%)`);
     const eta = c.eta_hours ? (c.eta_hours > 36 ? `about ${Math.round(c.eta_hours / 24 * 2) / 2} days left` : `about ${c.eta_hours} h left`) : "almost done";
     const test = d.heatTest != null
       ? `<div class="speed"><p>${SPIN}<b>Heat test running</b>, ${fmtMin(d.heatTest)} left. Rooms that need data are heating gently; each stops at 1° warmer, never above 21.5°.</p>
@@ -452,6 +481,7 @@ class SmartHeatingCard extends HTMLElement {
           "The gap between inside and outside needs to vary by 2°. A warm-up followed by a cool-down does it.")}
         ${row("heat", "Heating data", c.heating_hours ?? 0, c.heating_hours_needed ?? 2, " h",
           "Counted while the boiler runs with the room's radiator open. The heat test fills this in one go.")}
+        ${steady}
         <p class="now">Now: ${esc(d.calPhase || "starting")}</p>
         <p class="muted">${d.monitor ? "Watching only until you tap Start heating. Learning carries on either way."
           : "Heating runs as usual. Predictions and insulation grades appear room by room as they are learned."}</p>
@@ -485,9 +515,10 @@ class SmartHeatingCard extends HTMLElement {
         <header>
           <div class="title">
             <h2>${this._titleHtml() || esc(this._config.title || "Smart Heating")}</h2>
-            <p class="status s-${d.status}">${statusDot(d)}${esc(statusText)}${indicators(d)}${this._badge(d)}</p>
+            <p class="status s-${d.status}">${statusDot(d)}${esc(statusText)}${indicators(d)}${this._badge(d)}${this._winBadge(d)}</p>
           </div>
         </header>
+        ${this._winBox(d)}
         ${this._calPanel(d)}
         ${this._ready(d)}
         ${this._oneCycleBox(d)}
@@ -535,7 +566,7 @@ class SmartHeatingCard extends HTMLElement {
 
   _renderCompact(d, floors, statusText) {
     const hue = tempHue(d.houseTemp);
-    const badge = this._badge(d);
+    const badge = this._badge(d) + this._winBadge(d);
     const up = [...floors].sort((a, b) => a - b);
     const floorPills = up.length < 2 ? "" : up.map((f) => {
       const rooms = d.rooms.filter((r) => r.floor === f);
@@ -558,6 +589,7 @@ class SmartHeatingCard extends HTMLElement {
             ${badge || indicators(d) ? `<span class="sub">${indicators(d)}${badge}</span>` : ""}
           </div>
         </div>
+        ${this._winBox(d)}
         ${this._calPanel(d)}
         ${this._ready(d)}
         ${this._oneCycleBox(d)}
@@ -605,6 +637,11 @@ class SmartHeatingCard extends HTMLElement {
       e.stopPropagation();
       this._step(b.dataset.entity, b.dataset.value === "" ? null : parseFloat(b.dataset.value), parseFloat(b.dataset.step));
     }));
+    root.querySelector("[data-win]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._winOpen = !this._winOpen;
+      this._render();
+    });
     root.querySelector("[data-cal]")?.addEventListener("click", (e) => {
       e.stopPropagation();
       this._calOpen = !this._calOpen;
@@ -738,7 +775,12 @@ class SmartHeatingCard extends HTMLElement {
         ["In 8 h", f(r.pred8)],
         ["Reaches baseline", r.hoursToBase == null ? "not soon" : `in ${Number(r.hoursToBase).toFixed(1)} h`],
       ] : []),
-      ...(r.grade ? [["Insulation", `${r.grade} ${r.rating} (${Math.round(r.tau)} h)`]] : []),
+      ...(r.grade ? [["Insulation", (() => {
+        const settling = r.settled === false && (r.calibration ?? 0) < 100 ? ", settling" : "";
+        return r.settled === false && r.gradeRange
+          ? `${r.gradeRange} (${Math.round(r.tauLow)}-${Math.round(r.tauHigh)} h)${settling}`
+          : `${r.grade} ${r.rating} (${Math.round(r.tau)} h)${settling}`;
+      })()]] : []),
       ...(r.gain != null && r.tau != null ? [["Free heat", f(r.gain)]] : []),
       ...(r.warmup != null ? [["Warm-up", `${Number(r.warmup).toFixed(1)}°/h`]] : []),
       ...(!r.grade || r.warmup == null ? [["Learning", `${r.calibration ?? 0}%`]] : []),
@@ -1104,7 +1146,7 @@ const STYLE = `<style>
   .modebar button[aria-checked="true"] { color: #fff; border-color: transparent; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
   .modebar .m-off[aria-checked="true"] { background: #5f6b7a; }
   .modebar .m-one_cycle[aria-checked="true"] { background: #d18a1f; }
-  .modebar .m-continuous[aria-checked="true"] { background: #e0622f; }
+  .modebar .m-auto[aria-checked="true"] { background: #e0622f; }
   @media (max-width: 360px) { .modebar span { font-size: .75rem; } .modebar svg { display: none; } }
 
   @media (max-width: 420px) {
@@ -1157,6 +1199,11 @@ const STYLE = `<style>
   @keyframes sh-spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .badge .spin { animation-duration: 4s; } }
   .status .badge { margin-left: 4px; }
+  .badge.win svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+  .badge.win.open { color: var(--primary-color); border-color: color-mix(in srgb, var(--primary-color) 45%, transparent); }
+  .badge.win.close { color: var(--warning-color, #b26a00); border-color: color-mix(in srgb, var(--warning-color, #b26a00) 45%, transparent); }
+  .winbox { margin-top: 10px; padding: 8px 12px; border-radius: 10px; font-size: .8125rem; color: var(--primary-text-color);
+            background: color-mix(in srgb, var(--card-background-color, #fff) 80%, transparent); border: 1px solid var(--sh-line); }
   .calpanel { margin-top: 10px; padding: 10px 12px; border-radius: 10px; font-size: .8125rem;
               background: color-mix(in srgb, var(--card-background-color, #fff) 80%, transparent); border: 1px solid var(--sh-line); }
   .calpanel p { margin: 0 0 8px; }

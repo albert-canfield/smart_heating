@@ -181,7 +181,7 @@ async def main() -> None:
     hass.states.async_set("alarm_control_panel.alarmo", "armed_away")
     await c.async_refresh()
     print("armed away ->", c.data.status, c.data.boiler_on, "| mode kept:", c.mode.value)
-    assert c.data.status == "away" and not c.data.boiler_on and c.mode is Mode.CONTINUOUS
+    assert c.data.status == "away" and not c.data.boiler_on and c.mode is Mode.AUTO
     hass.states.async_set("sensor.living_t", "11.0")
     await c.async_refresh()
     print("armed away + frost ->", c.data.status, c.data.boiler_on)
@@ -212,7 +212,7 @@ async def main() -> None:
     assert c.mode is Mode.OFF and c.rooms["living"].override is Override.AUTO, (c.mode, c.rooms["living"].override)
     print("heat now from off -> one cycle -> off ok")
 
-    # Last night replayed: mild day (12.3° against a gate of 10°). Continuous waits for a room in use that is
+    # Last night replayed: mild day (12.3° against a gate of 10°). Auto waits for a room in use that is
     # 0.9° short; One Cycle heats it; an empty room waits either way.
     from dataclasses import replace
     gate_before = c.settings
@@ -221,10 +221,10 @@ async def main() -> None:
     hass.states.async_set("sensor.mean", "12.3")
     hass.states.async_set("sensor.living_t", "18.1")
     hass.states.async_set("sensor.hall_t", "16.0")
-    c.mode = Mode.CONTINUOUS
+    c.mode = Mode.AUTO
     await c.async_refresh()
     v = {r: (d.verdict.value, d.reason) for r, d in c.data.rooms.items()}
-    print("mild day, continuous:", v)
+    print("mild day, auto:", v)
     assert v["living"][0] == "vetoed" and v["living"][1].endswith("not cold enough")
     assert v["hall"][0] == "vetoed" and v["hall"][1].endswith("empty room")
     await c.async_set_mode(Mode.ONE_CYCLE)
@@ -245,7 +245,7 @@ async def main() -> None:
     await c.async_set_room_target("living", 21)
     await c.async_set_house_target(19)
     assert c.room_comfort(c.rooms["living"]) == 20.0, c.room_comfort(c.rooms["living"])
-    c.mode = Mode.CONTINUOUS
+    c.mode = Mode.AUTO
     await c.async_refresh()
     assert c.data.rooms["living"].need.target == 20.0, c.data.rooms["living"].need.target
     print("setpoints ok: living", c.room_comfort(c.rooms["living"]), "hall", c.room_comfort(c.rooms["hall"]))
@@ -268,7 +268,7 @@ async def main() -> None:
     hass.states.async_set("climate.bed_trv", "heat", {"temperature": 16, "max_temp": 30})
     hass.states.async_set("sensor.bed_t", "20.8")
     c.rooms["living"].model.heat_n = HEAT_NEEDED  # living already has its heating data
-    c.mode, c.monitor_only = Mode.CONTINUOUS, True
+    c.mode, c.monitor_only = Mode.AUTO, True
     calls.clear()
     await c.async_heat_test(True)
     await hass.async_block_till_done()
@@ -349,7 +349,7 @@ async def main() -> None:
     print("off cancels ->", [e["message"][:60] for e in list(c.log)[:3]])
     assert c.heat_test is None and c.rooms["bed"].override is Override.AUTO
     assert hass.states.get("switch.heating").state == "off" and ("switch", "turn_off", {"entity_id": "switch.heating"}) in calls
-    c.mode = Mode.CONTINUOUS
+    c.mode = Mode.AUTO
 
     # Something else switches the boiler off during a heat test: back off and stop the test, never fight.
     hass.states.async_set("sensor.bed_t", "19.5")
@@ -461,12 +461,58 @@ async def main() -> None:
     print("outdoor day mean attrs:", {k: v for k, v in od.items() if k != "kind"})
     print("calibration attrs:", {k: v for k, v in cal.extra_state_attributes.items() if k != "rooms"})
 
+    # Window advice: damp bedroom, rain outside but far drier air. Only the person at home is told.
+    from homeassistant.config_entries import ConfigEntry as _CE
+    from homeassistant.helpers import device_registry as dr, entity_registry as er
+    app = _CE(version=1, minor_version=1, domain="mobile_app", title="app", data={}, options={}, source="user",
+              unique_id=None, discovery_keys={}, subentries_data=[])
+    from unittest.mock import MagicMock
+    saved_entries, hass.config_entries = hass.config_entries, MagicMock()  # the device registry only checks the entry exists
+    hass.config_entries.async_get_entry = lambda eid: app if eid == app.entry_id else None
+    pushes = []
+    for who in ("albert", "wife"):
+        dev = dr.async_get(hass).async_get_or_create(config_entry_id=app.entry_id, identifiers={("mobile_app", who)},
+                                                     name=f"{who.title()} Phone")
+        er.async_get(hass).async_get_or_create("device_tracker", "mobile_app", who, device_id=dev.id,
+                                               suggested_object_id=f"{who}_phone")
+
+        async def push(call, who=who):
+            pushes.append((who, dict(call.data)))
+        hass.services.async_register("notify", f"mobile_app_{who}_phone", push)
+    hass.config_entries = saved_entries
+    hass.states.async_set("person.albert", "not_home", {"device_trackers": ["device_tracker.albert_phone"]})
+    hass.states.async_set("person.wife", "home", {"device_trackers": ["device_tracker.wife_phone"]})
+    c.notify_people = ["person.albert", "person.wife"]
+    assert c.phones() == ["notify.mobile_app_albert_phone", "notify.mobile_app_wife_phone"], c.phones()
+    c.mode = Mode.OFF  # boiler stays off: a burst is never advised while it heats
+    c.rooms["bed"].humidity_entity = "sensor.bed_rh"
+    hass.states.async_set("sensor.bed_rh", "80")
+    hass.states.async_set("weather.home", "rainy", {"humidity": 95, "temperature": 7.0, "wind_speed": 5, "wind_speed_unit": "m/s"})
+    hass.states.async_set("switch.heating", "off")
+    await c.async_refresh()
+    await hass.async_block_till_done()
+    from custom_components.smart_heating.sensor import WindowAdviceSensor
+    wa = WindowAdviceSensor(c).extra_state_attributes
+    print("window advice:", WindowAdviceSensor(c).native_value, "|", wa["reason"], "| pushed to:", [w for w, _ in pushes])
+    assert WindowAdviceSensor(c).native_value == "open" and wa["advice"] == "dry" and wa["rooms"] == ["Bedroom"], wa
+    assert [w for w, _ in pushes] == ["wife"] and pushes[0][1]["data"] == {"tag": "smart_heating_windows"}, pushes
+    # She goes out before the burst ends: the close still goes to her phone, not to whoever is home now.
+    hass.states.async_set("person.wife", "not_home", {"device_trackers": ["device_tracker.wife_phone"]})
+    hass.states.async_set("person.albert", "home", {"device_trackers": ["device_tracker.albert_phone"]})
+    c.windows.advice.until = dt_util.utcnow() - timedelta(seconds=1)
+    await c.async_refresh()
+    await hass.async_block_till_done()
+    print("burst over ->", c.windows.advice.action, c.windows.advice.kind, "| pushed to:", [w for w, _ in pushes])
+    assert c.windows.advice.kind == "done" and [w for w, _ in pushes] == ["wife", "wife"] and not c._window_open_to
+    c.mode = Mode.AUTO
+
     # The log survives a restart.
     await c.async_stop()
     c2 = HeatingCoordinator(hass, entry)
     await c2._load()
     assert any(e["message"].startswith("Relearning") for e in c2.log), "log kept across restarts"
     assert not c2.fresh, "a restart is not a new setup"
+    assert c2.windows.advice.kind == "done" and c2.windows.next_dry is not None, "window advice kept across restarts"
     # Deleting the integration deletes its stored data.
     import os
     from custom_components.smart_heating import async_remove_entry

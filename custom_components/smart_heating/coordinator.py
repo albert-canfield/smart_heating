@@ -11,15 +11,15 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import STATE_HOME, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.components import persistent_notification
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import device_registry as dr, entity_registry as er, issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.util import dt as dt_util
+from homeassistant.util import dt as dt_util, slugify
 
 from .const import (
     CONF_BOILER,
@@ -33,6 +33,7 @@ from .const import (
     CONF_NAME,
     CONF_NIGHT_SCHEDULE,
     CONF_OUTDOOR_MEAN,
+    CONF_OUTDOOR_HUMIDITY,
     CONF_OUTDOOR_TEMP,
     CONF_WEATHER,
     CONF_GAS_METER,
@@ -87,6 +88,11 @@ from .const import (
     OPT_BOILER_KW,
     OPT_GAS_PRICE,
     OPT_NOTIFY,
+    OPT_NOTIFY_PEOPLE,
+    notify_list,
+    window_alerts_default,
+    OPT_WINDOW_ALERTS,
+    WINDOW_PUSH_MAX,
     OPT_NIGHT_START,
     OPT_NIGHT_END,
     DEFAULT_NIGHT_START,
@@ -141,6 +147,7 @@ from .core import (
     make_plan,
 )
 from .core.learn import HEAT_NEEDED
+from .core.ventilation import Outside, RoomAir, WindowAdvisor, dew_point
 from .core.consumption import Cost, DayRecord, Rates, WINDOW_DAYS, fit, learn_step, meter_step, predict
 
 _LOGGER = logging.getLogger(__name__)
@@ -219,7 +226,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self.override_hours = float(opts.get(OPT_OVERRIDE_HOURS, DEFAULT_OVERRIDE_HOURS))
 
         # Runtime state (restored by the select/switch entities).
-        self.mode: Mode = Mode.CONTINUOUS
+        self.mode: Mode = Mode.AUTO
         self.enabled = True
         self.monitor_only = self.house_cfg.get(CONF_START_MODE, START_WATCH) == START_WATCH  # then restored by its switch
 
@@ -286,7 +293,13 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self.cal_notified = False
         self.night_start = _parse_time(opts.get(OPT_NIGHT_START, DEFAULT_NIGHT_START))
         self.night_end = _parse_time(opts.get(OPT_NIGHT_END, DEFAULT_NIGHT_END))
-        self.notify_service: str = str(opts.get(OPT_NOTIFY, "") or "")
+        self.notify_people: list[str] = list(opts.get(OPT_NOTIFY_PEOPLE) or [])
+        self.notify_services = notify_list(opts.get(OPT_NOTIFY))
+        self.window_alerts = bool(opts.get(OPT_WINDOW_ALERTS, window_alerts_default(opts)))
+        self.windows = WindowAdvisor()
+        self.window_info: dict[str, Any] = {}
+        self._window_pushes: list[datetime] = []
+        self._window_open_to: list[str] = []  # phones that got the last open: its close goes to them
         self.gas_price = float(opts.get(OPT_GAS_PRICE, DEFAULT_GAS_PRICE))  # fixed, or fallback for the rate sensor
         self.gas_price_now = self.gas_price
         self.gas_price_from = "fixed"
@@ -500,6 +513,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             "welcomed": self.welcomed,
             "log": list(self.log),
             "heat_test": self.heat_test,
+            "windows": {**self.windows.to_dict(), "pushes": [t.isoformat() for t in self._window_pushes],
+                        "open_to": self._window_open_to},
             "electric": {
                 "day": self.elec_day, "kwh": self.elec_kwh,
                 "rooms": {rid: [r.kwh_today, r.heater_min_today] for rid, r in self.rooms.items() if r.heaters},
@@ -526,6 +541,14 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             self.energy = EnergyDay.from_dict(data["energy"])
         self.cal_notified = bool(data.get("cal_notified", False))
         self.welcomed = bool(data.get("welcomed", False))
+        if data.get("windows"):
+            try:  # a close reminder survives a restart or an options save
+                w = data["windows"]
+                self.windows = WindowAdvisor.from_dict(w)
+                self._window_pushes = [datetime.fromisoformat(t) for t in w.get("pushes") or []]
+                self._window_open_to = list(w.get("open_to") or [])
+            except (KeyError, TypeError, ValueError) as err:
+                _LOGGER.warning("Discarding stored window advice: %s", err)
         for entry in data.get("log") or []:  # newest first, older than anything logged since start
             if isinstance(entry, dict):
                 self.log.append(entry)
@@ -575,14 +598,46 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         persistent_notification.async_create(
             self.hass, msg, title="Smart Heating has learned your house", notification_id=f"{DOMAIN}_calibrated"
         )
-        if self.notify_service and "." in self.notify_service:
-            domain, service = self.notify_service.split(".", 1)
-            try:
-                await self.hass.services.async_call(
-                    domain, service, {"title": "Smart Heating has learned your house", "message": msg.replace("**", "")}
-                )
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("Notify via %s failed: %s", self.notify_service, err)
+        self._send("Smart Heating has learned your house", msg.replace("**", ""))
+
+    def phones(self, home_only: bool = False) -> list[str]:
+        """Notify services to reach: each chosen person's Home Assistant app (only people at home when
+        `home_only`), plus any extra services, which always get everything."""
+        ent_reg, dev_reg = er.async_get(self.hass), dr.async_get(self.hass)
+        out: list[str] = []
+        for person in self.notify_people:
+            st = self.hass.states.get(person)
+            if st is None or (home_only and st.state != STATE_HOME):
+                continue
+            for tracker in st.attributes.get("device_trackers") or []:
+                e = ent_reg.async_get(tracker)
+                dev = dev_reg.async_get(e.device_id) if e and e.platform == "mobile_app" and e.device_id else None
+                service = slugify(f"mobile_app_{dev.name}") if dev and dev.name else None
+                if service and self.hass.services.has_service("notify", service):
+                    out.append(f"notify.{service}")
+        return list(dict.fromkeys(out + self.notify_services))
+
+    def _send(self, title: str, message: str, *, home_only: bool = False, tag: str | None = None,
+              to: list[str] | None = None) -> list[str]:
+        """Push to the chosen phones (or just `to`). Returns who it went to."""
+        try:
+            targets = to if to is not None else self.phones(home_only)
+        except Exception as err:  # noqa: BLE001  never let an alert get in the way of a boiler command
+            _LOGGER.warning("Could not work out who to notify: %s", err)
+            return []
+        for target in targets:
+            domain, service = target.split(".", 1)
+            data: dict[str, Any] = {"title": title, "message": message}
+            if tag and service.startswith("mobile_app"):
+                data["data"] = {"tag": tag}  # each alert replaces the last one on the phone
+            self.hass.async_create_task(self._call_notify(domain, service, data))
+        return targets
+
+    async def _call_notify(self, domain: str, service: str, data: dict[str, Any]) -> None:
+        try:
+            await self.hass.services.async_call(domain, service, data)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Notify via %s.%s failed: %s", domain, service, err)
 
     @property
     def boiler_firing(self) -> bool | None:
@@ -646,9 +701,9 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         if not self.welcomed:
             self.welcomed = True
             learning = (
-                "It learns how each room holds heat in the background (usually 1 to 3 days). Predictions and "
-                "insulation grades appear room by room as they are learned. Tap the **Learning** badge on the card "
-                "to see progress or run the gentle **Heat test** to speed it up."
+                "It learns how each room holds heat in the background: first figures in a day or two, steady "
+                "insulation grades in about 4 days to 3 weeks. Predictions and grades appear room by room. "
+                "Tap the **Learning** badge on the card to see progress or run the gentle **Heat test** to speed it up."
             )
             if self.monitor_only:
                 title = "Smart Heating is watching"
@@ -704,7 +759,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             self.one_cycle_all = self.one_cycle_all or all_rooms
         else:
             if mode is not self.mode:
-                self._log(f"Mode set to {mode.value}")
+                self._log(f"Mode set to {MODE_NAME[mode]}")
             self._reset_one_cycle()
         self.mode = mode
         await self.async_refresh()  # at once, so the card shows what One Cycle will do
@@ -1107,6 +1162,10 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         plan = make_plan(pairs, house, self.effective_settings, boiler_control=self.boiler_control)
 
         self._learn(now, house, pairs)
+        try:
+            self._windows_step(now, house, pairs, plan)
+        except Exception:  # noqa: BLE001  advice only: never block the plan
+            _LOGGER.exception("Window advice failed")
         self._account(now, house, plan)
         if self.learnable and self.calibrated and not self.cal_notified:
             self.cal_notified = True
@@ -1175,6 +1234,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             self.learning_phase = f"radiators cooling down ({60 - int(gas_min)} min until cooling data)"
         else:
             self.learning_phase = "collecting cooling data"
+        day = (dt_util.as_local(now) - timedelta(hours=12)).toordinal()  # noon to noon: a night stays together
         for cfg, snap in pairs:
             room = self.rooms[cfg.room_id]
             radiator_open = snap.valve_open if room.trvs else None
@@ -1193,7 +1253,56 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             else:
                 quiet = min(mins, gas_min) if cfg.radiator else mins
                 phase = Phase.FREE if quiet >= 60 else Phase.OTHER
-            room.model.observe(now, snap.temp, tout, phase)
+            room.model.observe(now, snap.temp, tout, phase, rh=self._float(room.humidity_entity), day=day)
+
+    def _windows_step(self, now: datetime, house: HouseSnapshot, pairs, plan: Plan) -> None:
+        """Advise opening windows to dry or cool the house, and closing them again."""
+        weather = self._state(self.house_cfg.get(CONF_WEATHER))
+        wa = weather.attributes if weather else {}
+        tout = self.outdoor.now_temp(now)
+        rh_out = self._float(self.house_cfg.get(CONF_OUTDOOR_HUMIDITY))
+        if rh_out is None:
+            rh_out = _attr_float(wa, "humidity")
+        td_out = dew_point(tout, rh_out) if rh_out is not None else _attr_float(wa, "dew_point")
+        out = Outside(tout, td_out, weather.state if weather else None, _wind_kmh(wa))
+        rooms = [RoomAir(r.cfg.name, self.room_temp(r), self._float(r.humidity_entity)) for r in self.rooms.values()]
+        self.window_info = {
+            "outdoor_humidity": rh_out, "outdoor_dew_point": td_out, "weather": out.condition, "wind_kmh": out.wind_kmh,
+            "humidity": {r.name: r.rh for r in rooms if r.rh is not None},
+            "dew_points": {r.name: r.dew_point for r in rooms if r.dew_point is not None},
+        }
+        # Radiators getting heat (hot-water-only burns don't count); without boiler state, what the plan asks for.
+        radiators = self._radiators_heating(now)[0] if self.has_boiler_state else plan.boiler_on
+        heating_now = bool(radiators or any(snap.heater_on for _, snap in pairs))
+        before = (self.windows.advice.action, self.windows.advice.kind)
+        adv = self.windows.step(now, rooms, out, heating_season=not self._season_off,
+                                heating_now=heating_now, night=house.night, away=house.away)
+        if (adv.action, adv.kind) == before or adv.action == "none":
+            return
+        self._log(f"Windows: {adv.reason}")
+        sent = self._push_window(now, adv, house.night)
+        if adv.action == "open":
+            self._window_open_to = sent
+        elif adv.kind != "hot":
+            self._window_open_to = []
+
+    def _push_window(self, now: datetime, adv, night: bool) -> list[str]:
+        """Phone alert to whoever is home. Opens and hot-day alerts: never at night, at most
+        WINDOW_PUSH_MAX a day. A close goes to the phones that got the open, home or not."""
+        if not self.window_alerts:
+            return []
+        self._window_pushes = [t for t in self._window_pushes if now - t < timedelta(hours=24)]
+        if adv.kind == "hot" or adv.action == "open":
+            if night or len(self._window_pushes) >= WINDOW_PUSH_MAX:
+                return []
+            sent = self._send("Smart Heating", adv.reason, home_only=True, tag=f"{DOMAIN}_windows")
+        elif self._window_open_to:
+            sent = self._send("Smart Heating", adv.reason, tag=f"{DOMAIN}_windows", to=self._window_open_to)
+        else:
+            return []
+        if sent:
+            self._window_pushes.append(now)
+        return sent
 
     def heater_power_w(self, room: Room) -> float:
         """Present electric draw of a room's heaters in W: measured if a power sensor exists, else rated."""
@@ -1523,7 +1632,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         away, why = is_away(pairs)
         if away != self.away:
             self._log(f"Away ({why}): heating off, safety floor only" if away
-                      else f"Home again: back to {self.mode.value}")
+                      else f"Home again: back to {MODE_NAME[self.mode]}")
         self.away, self.away_reason = away, why
 
     def _one_cycle_step(self, now: datetime, plan: Plan) -> None:
@@ -1745,9 +1854,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
     def _notify_problem(self, title: str, message: str) -> None:
         persistent_notification.async_create(self.hass, message, title=title, notification_id=f"{DOMAIN}_problem")
-        if self.notify_service and "." in self.notify_service:
-            domain, service = self.notify_service.split(".", 1)
-            self.hass.async_create_task(self.hass.services.async_call(domain, service, {"title": title, "message": message}))
+        self._send(title, message)
 
     def _check_external_boiler(self, now: datetime) -> None:
         """Did something else switch the boiler since our last command? Then back off, never fight."""
@@ -1981,6 +2088,25 @@ def _minutes(now: datetime, then: datetime | None) -> float:
     if then is None:
         return 1e9
     return (now - then).total_seconds() / 60
+
+
+MODE_NAME = {Mode.OFF: "Off", Mode.ONE_CYCLE: "One Cycle", Mode.AUTO: "Auto"}  # as shown on the card
+
+
+def _attr_float(attrs, key: str) -> float | None:
+    try:
+        return float(attrs[key])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+_TO_KMH = {"km/h": 1.0, "m/s": 3.6, "mph": 1.609, "kn": 1.852, "ft/s": 1.097}
+
+
+def _wind_kmh(attrs) -> float | None:
+    """The weather entity's wind speed in km/h."""
+    v = _attr_float(attrs, "wind_speed")
+    return round(v * _TO_KMH.get(str(attrs.get("wind_speed_unit", "km/h")), 1.0), 1) if v is not None else None
 
 
 def _clamp(v: float) -> int:

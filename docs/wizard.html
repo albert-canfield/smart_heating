@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- README illustration of the first setup step. Rendered by docs/render.py. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Smart Heating setup</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font-family: Inter, -apple-system, "Helvetica Neue", Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #1c2024;
+         background: radial-gradient(700px 400px at 50% 0%, #f3f6fb 0%, transparent 70%), linear-gradient(180deg, #eef2f8 0%, #e6ebf3 100%);
+         min-height: 100vh; padding: 48px 0 56px; }
+  .dlg { width: 372px; margin: 0 auto; background: #fff; border-radius: 22px; padding: 22px 22px 18px;
+         box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 24px 60px rgba(16, 24, 40, .14); }
+  .top { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #5f6673; }
+  .top svg { width: 26px; height: 26px; }
+  .steps { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 16px 0 18px; }
+  .steps i { height: 3px; border-radius: 2px; background: #e4e8ef; } .steps i:first-child { background: #1a7cf5; }
+  h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
+  p { margin: 6px 0 14px; font-size: 13px; line-height: 1.5; color: #5f6673; }
+  .opt { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #e4e8ef; border-radius: 12px; margin-top: 7px; font-size: 13.5px; }
+  .opt.on { border-color: #1a7cf5; background: #f2f7ff; box-shadow: 0 0 0 1px #1a7cf5 inset; }
+  .opt b { font-weight: 500; } .opt small { display: block; color: #6b7280; font-size: 11.5px; margin-top: 1px; }
+  .r { width: 16px; height: 16px; border-radius: 50%; border: 2px solid #9aa1ad; flex: none; }
+  .on .r { border-color: #1a7cf5; background: radial-gradient(circle, #1a7cf5 0 3.5px, #fff 4px); }
+  .help { font-size: 11.5px; color: #6b7280; margin: 10px 2px 0; line-height: 1.45; }
+  .foot { display: flex; justify-content: flex-end; margin-top: 14px; }
+  .btn { background: #1a7cf5; color: #fff; font-weight: 600; font-size: 13px; padding: 9px 20px; border-radius: 999px; }
+</style>
+</head>
+<body>
+  <div class="dlg">
+    <div class="top"><svg viewBox="0 0 256 256"><rect width="256" height="256" rx="58" fill="#101826"/><path d="M128 50L206 112V118H50V112Z" fill="#FF6B3D"/><path d="M50 126H206V160H50Z" fill="#FFB547"/><path d="M50 168H206V206H50Z" fill="#3D8BFF"/></svg>Smart Heating setup</div>
+    <div class="steps"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <h1>What heats your home?</h1>
+    <p>Pick the closest match. The next steps only ask what this setup needs.</p>
+    <div class="opt on"><span class="r"></span><span><b>Boiler with a hot water tank</b><small>System or regular boiler, S-plan or Y-plan</small></span></div>
+    <div class="opt"><span class="r"></span><span><b>Combi boiler (no tank)</b><small>Hot water straight from the boiler</small></span></div>
+    <div class="opt"><span class="r"></span><span><b>Electric heaters only</b><small>Smart plugs or smart heaters</small></span></div>
+    <div class="opt"><span class="r"></span><span><b>Boiler plus some electric heaters</b><small>Hybrid</small></span></div>
+    <div class="help">Not sure? A hot water tank in a cupboard means the first option. Hot water straight from the boiler, no tank, means combi.</div>
+    <div class="foot"><span class="btn">Next</span></div>
+  </div>
+</body>
+</html>

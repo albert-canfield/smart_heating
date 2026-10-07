@@ -31,7 +31,7 @@ HALL = RoomConfig("hall", "Hall", 0, Priority.C, 17.0, has_trv=False)
 
 
 def house(**kw):
-    base = dict(now=NOW, mode=Mode.CONTINUOUS, outdoor_mean=6.0)
+    base = dict(now=NOW, mode=Mode.AUTO, outdoor_mean=6.0)
     base.update(kw)
     return HouseSnapshot(**base)
 
@@ -109,7 +109,7 @@ def _mild(cfg, snap, **kw):
     return make_plan([(cfg, snap)], house(**{"outdoor_mean": 17.0, **kw}), S).rooms[cfg.room_id]
 
 
-def test_mild_day_continuous_heats_only_a_cold_room_in_use():
+def test_mild_day_auto_heats_only_a_cold_room_in_use():
     assert _mild(LIVING, RoomSnapshot(temp=18.0, occupied=True)).verdict is Verdict.VETOED  # 1 below: not cold enough
     d = _mild(LIVING, RoomSnapshot(temp=17.4, occupied=True))  # 1.6 below and not warming
     assert d.verdict is Verdict.APPROVED and "cold room" in d.reason
@@ -355,12 +355,112 @@ def test_learner_prior_gives_sane_tau_from_one_mild_night():
 def test_learner_progress_and_completion():
     m = RoomModel.new()
     _simulate(m, hours=30, tout_fn=lambda h: 2 + 8 * (h % 24) / 24)
-    assert m.progress >= 0.69  # free side done, no heating yet
+    assert m.free.n >= 96 and m.tau_error is None  # 24 h of data, but from 2 days only
+    assert not m.settled and m.progress < 0.6
+    _simulate(m, hours=120, tout_fn=lambda h: 2 + 8 * (h % 24) / 24)
+    assert m.settled and m.progress >= 0.69  # free side done, no heating yet
     assert not m.complete
     for i in range(10 * 3 + 1):
-        m.observe(NOW + timedelta(days=3, minutes=5 * i), 18.0 + 0.1 * i, 6.0, Phase.HEAT)
+        m.observe(NOW + timedelta(days=6, minutes=5 * i), 18.0 + 0.1 * i, 6.0, Phase.HEAT)
     assert m.warmup and abs(m.warmup - 1.2) < 0.05
     assert m.complete and overall_progress([m]) == 1.0
+
+
+def _days(model, gains, tau=40.0, step_min=5):
+    """Free-running days; `gains` is each day's free-heat lift (neighbours heated or not)."""
+    tin, k, t = 20.0, 1 / tau, NOW
+    for day, gain in enumerate(gains):
+        for i in range(24 * 60 // step_min):
+            h = day * 24 + i * step_min / 60
+            tout = 5 + 3 * math.sin(h / 24 * 2 * math.pi) + 2 * (day % 3)
+            model.observe(t, round(tin, 2), tout, Phase.FREE)
+            tin += -k * (tin - tout - gain) * step_min / 60
+            t += timedelta(minutes=step_min)
+
+
+def test_settles_only_when_days_agree():
+    clean, mixed = RoomModel.new(), RoomModel.new()
+    _days(clean, [3.0] * 6)
+    _days(mixed, [1.0, 6.0, 2.0, 5.5, 0.5, 6.0])
+    assert clean.settled and clean.tau_error < 0.05
+    lo, hi = clean.tau_range
+    assert lo <= clean.tau <= hi and 35 < clean.tau < 45
+    assert mixed.status["cooling_days"] == 5 and mixed.tau_error > 0.25 and not mixed.settled
+    lo, hi = mixed.tau_range
+    assert hi - lo > 0.4 * mixed.tau
+    assert not mixed.steady_enough and mixed.settle_hours() > 0
+
+
+def test_a_room_that_never_settles_counts_as_learned_after_two_weeks():
+    m = RoomModel.new()
+    for i in range(1200):  # day groups that disagree a lot: cooling rates 1/100 to 1/16 per hour
+        g = i % 5
+        x = 6 + (i // 5 % 40) * 0.25
+        m._commit(NOW + timedelta(minutes=15 * i), g, x, -[0.01, 0.06, 0.015, 0.05, 0.03][g] * (x - 2))
+    m.heat_n, m.heat_sum = 8, 8.0
+    assert not m.settled and m.steady_enough and m.complete and m.settle_hours() == 0
+    assert m.tau_range[1] - m.tau_range[0] > 0.3 * m.tau  # the range stays shown
+
+
+def test_disturbance_skips_samples_around_it():
+    m = RoomModel.new()
+    tin, t = 20.0, NOW
+    for i in range(8 * 60):  # 8 h free-running, 1 min ticks, shower at 4 h
+        shower = 240 <= i < 250
+        tin += (0.15 if shower else -0.004)
+        m.observe(t, round(tin, 2), 5.0, Phase.FREE, rh=85.0 if shower else 55.0)
+        t += timedelta(minutes=1)
+    # 1 h before, the shower, then 2 h of hold: about 13 of 32 samples left out.
+    assert 11 <= m.skipped <= 15 and m.free.n + len(m.pending) + m.skipped >= 30
+
+
+def test_steady_cap_counts_samples_not_faded_weight():
+    # 20 cooling samples a day (5 h) never add up to 960 once faded; the cap counts real samples.
+    m = RoomModel.new()
+    for i in range(1000):
+        g = i // 20 % 5
+        x = 6 + (i % 40) * 0.25
+        m._commit(NOW + timedelta(hours=1.2 * i), g, x, -[0.01, 0.06, 0.015, 0.05, 0.03][g] * (x - 2))
+    assert sum(f.n for f in m.days) < 960 and m.counted == 1000 and not m.settled and m.steady_enough
+    assert RoomModel.from_dict(m.to_dict()).counted == 1000 and RoomModel.from_dict({"free": {}}).counted == 0
+
+
+def test_cooling_alone_does_not_look_like_moisture():
+    # Relative humidity rises as a room cools with the same moisture in it: no hold.
+    m = RoomModel.new()
+    t = NOW
+    for i in range(3 * 60):
+        tin = 20.0 - i * 1.6 / 60
+        rh = 100 * math.exp(17.62 * 13.0 / (243.12 + 13.0) - 17.62 * tin / (243.12 + tin))  # dew point stays 13.0
+        m.observe(t, round(tin, 2), 5.0, Phase.FREE, rh=round(rh, 1))
+        t += timedelta(minutes=1)
+    assert m.skipped == 0 and m.hold_until is None
+
+
+def test_humidity_jump_alone_is_a_disturbance():
+    m = RoomModel.new()
+    t = NOW
+    for i in range(3 * 60):
+        m.observe(t, round(20.0 - i * 0.003, 2), 5.0, Phase.FREE, rh=80.0 if 60 <= i < 70 else 55.0)
+        t += timedelta(minutes=1)
+    assert m.skipped >= 6 and m.hold_until is not None
+
+
+def test_heating_flushes_held_samples():
+    m = RoomModel.new()
+    t = NOW
+    for i in range(40):
+        m.observe(t + timedelta(minutes=i), 20.0 - i * 0.01, 5.0, Phase.FREE)
+    assert m.free.n == 0 and len(m.pending) == 2
+    m.observe(t + timedelta(minutes=41), 19.6, 5.0, Phase.OTHER)
+    assert round(m.free.n, 3) == 2 and not m.pending
+
+
+def test_old_data_fades():
+    m = RoomModel.new()
+    m._commit(NOW, 0, 10.0, -0.3)
+    m._commit(NOW + timedelta(days=30), 1, 10.0, -0.3)
+    assert abs(m.free.n - 1.5) < 1e-9 and abs(m.days[0].n - 0.5) < 1e-9 and m.days[1].n == 1
 
 
 def test_other_phase_resets_segment():
@@ -385,6 +485,14 @@ def test_model_roundtrip():
     _simulate(m, hours=10)
     m2 = RoomModel.from_dict(m.to_dict())
     assert m2.free.n == m.free.n and m2.tau == m.tau
+    assert [f.n for f in m2.days] == [f.n for f in m.days] and m2.faded == m.faded
+
+
+def test_model_loads_old_format():
+    old = {"free": {"n": 100, "sx": 1000.0, "sy": -20.0, "sxx": 10400.0, "sxy": -205.0, "xmin": 7.0, "xmax": 13.0},
+           "heat_n": 9, "heat_sum": 9.0, "seg_phase": "free", "seg_start": None, "seg_tin": None}
+    m = RoomModel.from_dict(old)
+    assert m.tau and len(m.days) == 5 and m.tau_error is None and not m.complete
 
 
 def test_classify():
@@ -477,6 +585,8 @@ def test_insulation_grades_and_scores():
     assert insulation.loss_per_hour(84) == 0.12
     assert insulation.combine([32, 84, 600]) == 84
     assert insulation.describe(None)["grade"] is None
+    assert insulation.grade_range(32, 48) == "D-E" and insulation.grade_range(42, 50) == "D"
+    assert insulation.grade_range(None, 50) is None
 
 
 def test_away_sources():
@@ -522,18 +632,24 @@ def test_calibration_summary_counts_down():
     models = [RoomModel.new() for _ in range(5)]
     info = calibration_summary(models, 0.8)
     assert info["rooms_needed"] == 4 and info["cooling_hours_left"] == 24.0 and info["eta_hours"] > 24
+    assert info["cooling_days"] == 0 and info["uncertainty_pct"] is None
     for m in models[:4]:
         for i in range(96):
             m.free.add(1.0 + i * 0.03, -0.05 - i * 0.0015)
         m.heat_n, m.heat_sum = 8, 8.0
     info = calibration_summary(models, 0.8)
-    assert info["rooms_done"] == 4 and info["cooling_hours_left"] == 0 and info["eta_hours"] == 0
+    assert info["rooms_done"] == 0 and info["cooling_hours_left"] == 0 and info["eta_hours"] >= 96
+    for m in models[:4]:
+        for i in range(96):
+            m.days[i % 5].add(1.0 + i * 0.03, -0.05 - i * 0.0015)
+    info = calibration_summary(models, 0.8)
+    assert info["rooms_done"] == 4 and info["uncertainty_pct"] == 0 and info["eta_hours"] == 0
 
 
 # ---------- electric heaters and hybrid ----------
 
 def _house(mode=None, boiler_on=False):
-    return HouseSnapshot(now=datetime(2026, 1, 10, 12, tzinfo=timezone.utc), mode=mode or Mode.CONTINUOUS,
+    return HouseSnapshot(now=datetime(2026, 1, 10, 12, tzinfo=timezone.utc), mode=mode or Mode.AUTO,
                          outdoor_mean=5.0, boiler_on=boiler_on)
 
 
@@ -630,3 +746,84 @@ def test_meter_restart_and_cost_at_the_rate_when_used():
     assert carry + last - start == 3.0
     c = Cost()
     assert c.add(10.0, 0.06) == 0.6 and c.add(15.0, 0.10) == 1.1 and c.add(15.0, 0.5) == 1.1
+
+
+# ---------- window advice ----------
+from core.ventilation import COOLDOWN, Outside, RoomAir, WindowAdvisor, burst_minutes, dew_point  # noqa: E402
+
+
+def test_dew_point_and_burst_length():
+    assert dew_point(20.0, 65.0) == 13.2 and dew_point(5.0, 95.0) == 4.3
+    assert burst_minutes(-2) == 5 and burst_minutes(6) == 10 and burst_minutes(12) == 15 and burst_minutes(18) == 25
+    assert burst_minutes(6, wind_kmh=40) == 5
+
+
+def _damp():
+    return [RoomAir("Bathroom", 20.0, 80.0), RoomAir("Bedroom", 19.0, 55.0)]
+
+
+def test_drying_burst_then_close_then_cooldown():
+    w, rainy = WindowAdvisor(), Outside(6.0, dew_point(6.0, 95.0), "rainy", 15.0)
+    a = w.step(NOW, _damp(), rainy, heating_season=True)
+    assert a.action == "open" and a.kind == "dry" and a.rooms == ["Bathroom"] and a.minutes == 10
+    assert "sheltered side" in a.reason  # light rain does not stop it: the air is still far drier
+    assert w.step(NOW + timedelta(minutes=5), _damp(), rainy, heating_season=True).action == "open"
+    a = w.step(NOW + timedelta(minutes=10), _damp(), rainy, heating_season=True)
+    assert a.action == "close" and a.kind == "done"
+    assert w.step(NOW + timedelta(minutes=26), _damp(), rainy, heating_season=True).action == "none"  # cooldown
+    later = NOW + timedelta(minutes=10) + COOLDOWN
+    assert w.step(later, _damp(), rainy, heating_season=True).action == "open"
+
+
+def test_no_drying_when_it_would_not_help_or_waste_heat():
+    dry_out = Outside(6.0, dew_point(6.0, 90.0), "cloudy")
+    assert WindowAdvisor().step(NOW, _damp(), dry_out, heating_season=True, heating_now=True).action == "none"
+    assert WindowAdvisor().step(NOW, _damp(), dry_out, heating_season=True, night=True).action == "none"
+    assert WindowAdvisor().step(NOW, _damp(), Outside(6.0, 4.0, "pouring"), heating_season=True).action == "none"
+    assert WindowAdvisor().step(NOW, _damp(), Outside(6.0, 4.0, "cloudy", 70.0), heating_season=True).action == "none"
+    muggy = Outside(18.0, dew_point(18.0, 90.0), "cloudy")  # outside air as damp as inside
+    assert WindowAdvisor().step(NOW, _damp(), muggy, heating_season=False).action == "none"
+    assert WindowAdvisor().step(NOW, _damp(), dry_out, heating_season=True, away=True).action == "none"
+
+
+def test_storm_closes_an_open_window():
+    w = WindowAdvisor()
+    w.step(NOW, _damp(), Outside(6.0, 4.0, "rainy"), heating_season=True)
+    a = w.step(NOW + timedelta(minutes=3), _damp(), Outside(6.0, 4.0, "pouring"), heating_season=True)
+    assert a.action == "close" and a.kind == "storm" and "pouring" in a.reason
+
+
+def test_summer_cooling_and_hot_days():
+    hot = [RoomAir("Loft", 26.0, 50.0), RoomAir("Kitchen", 22.0, 50.0)]
+    w = WindowAdvisor()
+    a = w.step(NOW, hot, Outside(19.0, 10.0, "clear-night"), heating_season=False)
+    assert a.action == "open" and a.kind == "cool" and a.rooms == ["Loft"]
+    assert WindowAdvisor().step(NOW, hot, Outside(19.0, 10.0), heating_season=True).action == "none"  # heating season
+    cooler = [RoomAir("Loft", 23.5, 50.0), RoomAir("Kitchen", 21.0, 50.0)]
+    assert w.step(NOW + timedelta(hours=1), cooler, Outside(19.0, 10.0), heating_season=False).action == "open"
+    done = [RoomAir("Loft", 22.0, 50.0), RoomAir("Kitchen", 20.0, 50.0)]
+    a = w.step(NOW + timedelta(hours=2), done, Outside(19.0, 10.0), heating_season=False)
+    assert a.action == "close" and a.kind == "cooled"
+    a = WindowAdvisor().step(NOW, hot, Outside(29.0, 15.0, "sunny"), heating_season=False)
+    assert a.action == "close" and a.kind == "hot"
+
+
+def test_window_advice_survives_a_restart_and_closes_when_everyone_leaves():
+    w = WindowAdvisor()
+    w.step(NOW, _damp(), Outside(6.0, 4.0, "cloudy"), heating_season=True)
+    w2 = WindowAdvisor.from_dict(w.to_dict())
+    assert w2.advice.action == "open" and w2.advice.until == w.advice.until and w2.next_dry == w.next_dry
+    a = w2.step(NOW + timedelta(minutes=10), _damp(), Outside(6.0, 4.0, "cloudy"), heating_season=True)
+    assert a.action == "close" and a.kind == "done"
+    w3 = WindowAdvisor()
+    w3.step(NOW, _damp(), Outside(6.0, 4.0, "cloudy"), heating_season=True)
+    a = w3.step(NOW + timedelta(minutes=2), _damp(), Outside(6.0, 4.0, "cloudy"), heating_season=True, away=True)
+    assert a.action == "close" and a.kind == "away"
+    assert w3.step(NOW + timedelta(minutes=30), _damp(), Outside(6.0, 4.0), heating_season=True, away=True).action == "none"
+
+
+def test_missing_outdoor_temperature_keeps_a_running_burst():
+    w = WindowAdvisor()
+    w.step(NOW, _damp(), Outside(6.0, 4.0, "cloudy"), heating_season=True)
+    assert w.step(NOW + timedelta(minutes=3), _damp(), Outside(None), heating_season=True).action == "open"
+    assert w.step(NOW + timedelta(minutes=10), _damp(), Outside(None), heating_season=True).kind == "done"

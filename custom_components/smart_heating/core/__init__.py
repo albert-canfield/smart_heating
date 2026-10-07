@@ -22,4 +22,5 @@ from .energy import EnergyDay  # noqa: F401
 from .learn import Phase, RoomModel, calibration_summary, classify, house_tau, overall_progress  # noqa: F401
 from .setpoints import Setpoints  # noqa: F401
 from .away import is_away  # noqa: F401
+from .ventilation import Advice, Outside, RoomAir, WindowAdvisor, dew_point  # noqa: F401
 from . import insulation  # noqa: F401

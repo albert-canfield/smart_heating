@@ -44,7 +44,7 @@ for (const [id,name,floor,prio,temp,target,verdict,reason,trend,occ,trv] of room
   for (const e of [`sensor.${id}_need`,`sensor.${id}_decision`,`select.${id}_override`,`sensor.${id}_tau`,`sensor.${id}_warm`,`sensor.${id}_pred`,`sensor.${id}_ret`]) entities[e] = { platform:"smart_heating", device_id:id };
 }
 states["sensor.smart_heating_status"] = { entity_id:"sensor.smart_heating_status", state:"heating", attributes:{ boiler_demand:true, reason:"2 room(s) approved", open_rooms:["Living room","Kitchen","Play room"] }};
-states["select.smart_heating_mode"] = { entity_id:"select.smart_heating_mode", state:"continuous", attributes:{ options:["off","one_cycle","continuous"] }};
+states["select.smart_heating_mode"] = { entity_id:"select.smart_heating_mode", state:"auto", attributes:{ options:["off","one_cycle","auto"] }};
 states["switch.smart_heating_monitor_only"] = { entity_id:"switch.smart_heating_monitor_only", state:"on", attributes:{} };
 const logEntries = [
   {time:"2026-11-10T18:02:00Z", room:"Play room", message:"approved (manual heat) 17.9° to 18.0° valve opening"},

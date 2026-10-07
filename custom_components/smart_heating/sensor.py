@@ -88,6 +88,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddC
                 Metric(c, "house_electricity_today", lambda c: c.elec_house_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="house_electricity_today", **kwh),
             ]
     house.append(DecisionLog(c))
+    house.append(WindowAdviceSensor(c))
     house.append(RetentionSensor(c, "house_heat_retention", lambda c: c.house_tau, scope="house"))
     if len(c.floors) > 1:
         house += [
@@ -111,6 +112,39 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddC
             ] + ([RoomEnergy(c, room_id)] if c.rooms[room_id].heaters else []),
             config_subentry_id=room_id,
         )
+
+
+class WindowAdviceSensor(HouseEntity, SensorEntity):
+    """Open the windows to dry or cool the house, or close them."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["open", "close", "none"]
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "window_advice")
+
+    @property
+    def native_value(self) -> str:
+        return self.coordinator.windows.advice.action
+
+    @property
+    def icon(self) -> str:
+        return {"open": "mdi:window-open-variant", "close": "mdi:window-closed-variant"}.get(
+            self.native_value, "mdi:window-closed")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        a = self.coordinator.windows.advice
+        return {
+            "kind": "window_advice",
+            "advice": a.kind or None,
+            "reason": a.reason or None,
+            "rooms": a.rooms,
+            "minutes": a.minutes,
+            "since": a.since.isoformat() if a.since else None,
+            "until": a.until.isoformat() if a.until else None,
+            **{k: v for k, v in self.coordinator.window_info.items() if k not in ("humidity", "dew_points")},
+        }
 
 
 class HouseStatus(HouseEntity, SensorEntity):
@@ -313,7 +347,11 @@ class RoomModelSensor(RoomEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         m = self.coordinator.rooms[self.room_id].model
-        return {"kind": self._attr_translation_key, "calibration": round(m.progress * 100), "free_heat_gain": m.gain, **m.status}
+        out = {"kind": self._attr_translation_key, "calibration": round(m.progress * 100), "free_heat_gain": m.gain, **m.status}
+        if self._attr_translation_key == "heat_loss_tau":
+            lo, hi = m.tau_range or (None, None)
+            out.update(tau_low=lo, tau_high=hi, settled=m.settled)
+        return out
 
 
 class RoomPredicted(RoomEntity, SensorEntity):
@@ -430,7 +468,10 @@ class RoomRetention(RoomEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         m = self.coordinator.rooms[self.room_id].model
-        return _retention_attrs(m.tau, round(m.progress * 100))
+        d = _retention_attrs(m.tau, round(m.progress * 100))
+        lo, hi = m.tau_range or (None, None)
+        d.update(tau_low=lo, tau_high=hi, grade_range=insulation.grade_range(lo, hi), settled=m.settled)
+        return d
 
 
 class RoomEnergy(RoomEntity, SensorEntity):
