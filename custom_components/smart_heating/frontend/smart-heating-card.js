@@ -72,7 +72,7 @@ const ICON_FLAME = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c1
 const MODE_ICON = {
   off: '<path d="M12 3v8"/><path d="M6.6 6.6a7.5 7.5 0 1 0 10.8 0"/>',
   one_cycle: '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v4h-4"/><path d="M11 10.5l1.5-1v6"/>',
-  auto: '<path d="M5.5 19.5L12 4.5l6.5 15"/><path d="M8.2 13.5h7.6"/>',
+  auto: '<path d="M8 8.5a3.5 3.5 0 1 0 0 7c2.6 0 5.4-7 8-7a3.5 3.5 0 1 1 0 7c-2.6 0-5.4-7-8-7z"/>',
 };
 
 function modeBar(current) {
