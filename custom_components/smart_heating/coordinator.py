@@ -74,6 +74,7 @@ from .const import (
     CONF_HEATER_W,
     CONF_HEATER_ECO_W,
     CONF_RADIATOR,
+    CONF_CALLS_BOILER,
     DEFAULT_HEATER_W,
     OPT_ELEC_PRICE,
     DEFAULT_ELEC_PRICE,
@@ -93,6 +94,7 @@ from .const import (
     window_alerts_default,
     OPT_WINDOW_ALERTS,
     WINDOW_PUSH_MAX,
+    FREE_AFTER_MIN,
     OPT_NIGHT_START,
     OPT_NIGHT_END,
     DEFAULT_NIGHT_START,
@@ -148,6 +150,7 @@ from .core import (
 )
 from .core.learn import HEAT_NEEDED
 from .core.ventilation import Outside, RoomAir, WindowAdvisor, dew_point
+from .core.safety import Block, HeaterWatch, heater_block
 from .core.consumption import Cost, DayRecord, Rates, WINDOW_DAYS, fit, learn_step, meter_step, predict
 
 _LOGGER = logging.getLogger(__name__)
@@ -185,6 +188,10 @@ class Room:
     heat_since: datetime | None = None
     kwh_today: float = 0.0
     heater_min_today: float = 0.0
+    heater_watch: HeaterWatch = field(default_factory=HeaterWatch)
+    heater_block: Block | None = None  # why its heater is kept off right now
+    alerted: dict = field(default_factory=dict)  # block kind -> last phone alert
+    no_temp_since: datetime | None = None
 
     @property
     def entities(self) -> list[str]:
@@ -250,6 +257,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 comfort=float(d.get(CONF_COMFORT, 19.0)),
                 has_trv=bool(d.get(CONF_TRVS)),
                 radiator=self.heating_type != TYPE_ELECTRIC and bool(d.get(CONF_RADIATOR, True)),
+                calls_boiler=bool(d.get(CONF_CALLS_BOILER, True)),
                 heater=bool(d.get(CONF_HEATERS)),
             )
             self.rooms[sub_id] = Room(
@@ -298,6 +306,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self.window_alerts = bool(opts.get(OPT_WINDOW_ALERTS, window_alerts_default(opts)))
         self.windows = WindowAdvisor()
         self.window_info: dict[str, Any] = {}
+        self.radiator_rooms: list[str] = []
+        self.heater_rooms_on: list[str] = []
         self._window_pushes: list[datetime] = []
         self._window_open_to: list[str] = []  # phones that got the last open: its close goes to them
         self.gas_price = float(opts.get(OPT_GAS_PRICE, DEFAULT_GAS_PRICE))  # fixed, or fallback for the rate sensor
@@ -853,11 +863,11 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
     # ---------- setup checks (Repairs) ----------
 
-    def _issue(self, issue_id: str, active: bool, placeholders: dict[str, str] | None = None) -> None:
+    def _issue(self, issue_id: str, active: bool, placeholders: dict[str, str] | None = None, key: str | None = None) -> None:
         if active:
             ir.async_create_issue(
                 self.hass, DOMAIN, issue_id, is_fixable=False, severity=ir.IssueSeverity.WARNING,
-                translation_key=issue_id, translation_placeholders=placeholders or {},
+                translation_key=key or issue_id, translation_placeholders=placeholders or {},
             )
         else:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
@@ -1084,6 +1094,9 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         st = self._state(entity_id)
         if st is None:
             return
+        block = room.heater_block
+        if on and block is not None and not (self.heat_test and block.kind == "ceiling"):
+            on = False  # a precaution holds it off (see _guard_heaters); the heat test has its own 21.5° cap
         domain = st.domain
         try:
             if domain == "climate":
@@ -1156,12 +1169,15 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             pairs.append((self.setpoints.room_cfg(room.cfg), self._room_snapshot(room, now)))
 
         self.house_temp, self.floor_temps = house_means(
-            [(cfg.floor, snap.temp) for cfg, snap in pairs]
+            [(cfg.floor, snap.temp, cfg.radiator or cfg.heater) for cfg, snap in pairs]
         )
 
         plan = make_plan(pairs, house, self.effective_settings, boiler_control=self.boiler_control)
+        self._guard_heaters(now, pairs, plan)
+        self._check_readings(now, pairs)
 
         self._learn(now, house, pairs)
+        self._heat_now(now, plan)
         try:
             self._windows_step(now, house, pairs, plan)
         except Exception:  # noqa: BLE001  advice only: never block the plan
@@ -1230,8 +1246,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             self.learning_phase = "waiting for outdoor temperature"
         elif gas_on or heaters_on:
             self.learning_phase = "collecting heating data"
-        elif gas_min < 60:
-            self.learning_phase = f"radiators cooling down ({60 - int(gas_min)} min until cooling data)"
+        elif gas_min < FREE_AFTER_MIN:
+            self.learning_phase = f"radiators cooling down ({FREE_AFTER_MIN - int(gas_min)} min until cooling data)"
         else:
             self.learning_phase = "collecting cooling data"
         day = (dt_util.as_local(now) - timedelta(hours=12)).toordinal()  # noon to noon: a night stays together
@@ -1252,7 +1268,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 phase = Phase.OTHER  # boiler on, this radiator shut: pipes still warm the room a bit
             else:
                 quiet = min(mins, gas_min) if cfg.radiator else mins
-                phase = Phase.FREE if quiet >= 60 else Phase.OTHER
+                phase = Phase.FREE if quiet >= FREE_AFTER_MIN else Phase.OTHER
             room.model.observe(now, snap.temp, tout, phase, rh=self._float(room.humidity_entity), day=day)
 
     def _windows_step(self, now: datetime, house: HouseSnapshot, pairs, plan: Plan) -> None:
@@ -1555,6 +1571,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             heating_call,
             meter,
             self.outdoor.now_temp(now),
+            heaters_on=bool(self.heater_rooms_on),
         )
         if self.energy is not before and before.day:
             self._close_gas_day(before, unit_m3)
@@ -1989,14 +2006,106 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         Burns for hot water only don't count: an S/Y-plan cylinder with the heating valve shut,
         or a combi running a tap, leaves the radiators cooling.
         """
-        firing, firing_min = self._firing(now)
-        hw = self._is_on(self.hw_entity)
-        delivering = firing and self._heating_demand() and not (self.hw_system == HW_COMBI and hw)
+        delivering, firing_min = self._delivering_now(now)
         if self._delivering is None:
             self._delivering, self._delivering_since = delivering, now - timedelta(minutes=min(firing_min, 1e6))
         elif delivering != self._delivering:
             self._delivering, self._delivering_since = delivering, now
         return delivering, _minutes(now, self._delivering_since)
+
+    def _temp_reported_at(self, room: Room) -> datetime | None:
+        """When the room's temperature was last reported (even unchanged), from whichever entities give it."""
+        ids = [room.temp_entity] if room.temp_entity else [*room.trvs, *(h for h in room.heaters if h.startswith("climate."))]
+        times = [getattr(st, "last_reported", None) or st.last_updated for st in map(self._state, ids) if st is not None]
+        return max(times) if times else None
+
+    def _check_readings(self, now: datetime, pairs) -> None:
+        """A heater room without a temperature for 30 min is flagged in Repairs (dead battery, sensor removed)."""
+        for cfg, snap in pairs:
+            room = self.rooms[cfg.room_id]
+            if not room.heaters:
+                continue
+            if snap.temp is None:
+                room.no_temp_since = room.no_temp_since or now
+            else:
+                room.no_temp_since = None
+            missing = room.no_temp_since is not None and now - room.no_temp_since >= timedelta(minutes=30)
+            self._issue(f"room_no_temperature_{cfg.room_id}", missing, {"room": cfg.name}, key="room_no_temperature")
+
+    def _guard_heaters(self, now: datetime, pairs, plan: Plan) -> None:
+        """Electric heater precautions (core/safety.py): they only ever keep a heater off."""
+        for cfg, snap in pairs:
+            room = self.rooms[cfg.room_id]
+            if not room.heaters:
+                continue
+            on = any(self._heater_entity_on(h) for h in room.heaters)
+            room.heater_watch.update(now, on, snap.temp)
+            d = plan.rooms.get(cfg.room_id)
+            block = heater_block(now, room.heater_watch, snap.temp, self._temp_reported_at(room),
+                                 d.need.target if d else None, on, self.starting)
+            wanted = bool(d and d.heater_on) or on
+            if block and d is not None and d.heater_on:
+                d.heater_on = False
+            before, room.heater_block = room.heater_block, block
+            if block and block.alert and wanted and (before is None or before.kind != block.kind):
+                self._log(f"Heater kept off: {block.reason}", room=cfg.name)
+                last = room.alerted.get(block.kind)
+                if last is None or now - last >= timedelta(hours=12):
+                    room.alerted[block.kind] = now
+                    self._send("Smart Heating", f"{cfg.name} heater switched off: {block.reason}.")
+            self._issue(f"heater_stopped_{cfg.room_id}", bool(block and block.kind in ("stale", "stuck", "no_reading")),
+                        {"room": cfg.name, "reason": block.reason if block else ""}, key="heater_stopped")
+
+    def _delivering_now(self, now: datetime) -> tuple[bool, float]:
+        """Boiler burning for the radiators right now (no side effects), and minutes since it last changed."""
+        firing, firing_min = self._firing(now)
+        hw = self._is_on(self.hw_entity)
+        return firing and self._heating_demand() and not (self.hw_system == HW_COMBI and hw), firing_min
+
+    def _heat_now(self, now: datetime, plan: Plan) -> None:
+        """Which rooms are really getting heat, from device states: a radiator while the boiler heats
+        (its TRV open, or no TRV: always open, like a bypass radiator), or an electric heater that is on."""
+        if self.has_boiler_state:
+            boiler = self._delivering_now(now)[0]
+        else:  # nothing tells us: go by the plan when we are in control
+            boiler = bool(plan.boiler_on and self.enabled and not self.monitor_only)
+        self.radiator_rooms = [rid for rid, r in self.rooms.items()
+                               if boiler and r.cfg.radiator and (not r.trvs or self._valve_open(r) is not False)]
+        self.heater_rooms_on = [rid for rid, r in self.rooms.items() if any(self._heater_entity_on(h) for h in r.heaters)]
+
+    def room_state(self, room: Room) -> str:
+        """controlled, follows_boiler (radiator without a TRV), watched (nothing to heat it) or not_working (no reading)."""
+        if self.room_temp(room) is None:
+            return "not_working"
+        if room.heaters or (room.cfg.radiator and room.trvs):
+            return "controlled"
+        return "follows_boiler" if room.cfg.radiator else "watched"
+
+    @property
+    def heating_rooms(self) -> list[str]:
+        return list(dict.fromkeys(self.radiator_rooms + self.heater_rooms_on))
+
+    @property
+    def boiler_hold_until(self) -> datetime | None:
+        """Boiler protection is holding back switching (flicker lockout, or something else switched it)."""
+        now = dt_util.utcnow()
+        holds = [t for t in (self.boiler_locked_until, self.external_hold_until) if t and t > now]
+        return max(holds) if holds else None
+
+    @property
+    def boiler_called(self) -> bool | None:
+        """Is our boiler control set to call for heat? None without boiler control."""
+        return self._commanded_on(self._state(self.boiler_entity)) if self.boiler_control else None
+
+    @property
+    def night_cooling_hours(self) -> float | None:
+        """Cooling data a night with the heating off can give: the night window less the first hour.
+        None when a night schedule entity decides the night (its length isn't known)."""
+        if self.house_cfg.get(CONF_NIGHT_SCHEDULE):
+            return None
+        start = self.night_start.hour * 60 + self.night_start.minute
+        end = self.night_end.hour * 60 + self.night_end.minute
+        return round(max(0.0, ((end - start) % (24 * 60)) / 60 - FREE_AFTER_MIN / 60), 1)
 
     def _firing(self, now: datetime) -> tuple[bool, float]:
         """Is the boiler actually running (for gas and learning), and for how long in that state."""

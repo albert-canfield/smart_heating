@@ -31,7 +31,7 @@ const rooms = [
 const states = {}, entities = {}, devices = {};
 for (const [id,name,floor,prio,temp,target,verdict,reason,trend,occ,trv] of rooms) {
   devices[id] = { name };
-  states[`sensor.${id}_need`] = { entity_id:`sensor.${id}_need`, state:"comfort", attributes:{ floor, priority:prio, temperature: temp, target, deficit:0, comfort:19, trend, occupied:occ, has_trv:trv, override: id==="play"?"heat":"auto", override_until: id==="play"?"2026-10-02T15:30:00Z":null, reason, has_heater: id==="kitchen", heater_on: id==="kitchen" }};
+  states[`sensor.${id}_need`] = { entity_id:`sensor.${id}_need`, state: verdict==="approved" ? "comfort" : "none", attributes:{ floor, priority:prio, temperature: temp, target, deficit:0, comfort:19, trend, occupied:occ, target_source: temp==null ? null : occ ? "comfort" : "baseline", has_trv:trv, heating_now: verdict==="approved"||verdict==="piggyback", override: id==="play"?"heat":"auto", override_until: id==="play"?"2026-10-02T15:30:00Z":null, reason, has_heater: id==="kitchen", heater_on: id==="kitchen" }};
   if (id==="kitchen") { states["sensor.kitchen_energy"] = { entity_id:"sensor.kitchen_energy", state:"1.42", attributes:{ kind:"room_energy", power_now_w: 1800, cost_today: 0.36 }}; entities["sensor.kitchen_energy"] = { platform:"smart_heating", device_id:id }; }
   states[`sensor.${id}_decision`] = { entity_id:`sensor.${id}_decision`, state:verdict, attributes:{ reason, valve_command:null }};
   states[`select.${id}_override`] = { entity_id:`select.${id}_override`, state: id==="office"?"off":(id==="play"?"heat":"auto"), attributes:{ options:["auto","heat","off"] }};
@@ -43,7 +43,7 @@ for (const [id,name,floor,prio,temp,target,verdict,reason,trend,occ,trv] of room
   states[`sensor.${id}_ret`] = { entity_id:`sensor.${id}_ret`, state: id==="living" ? "65" : "71", attributes:{ kind:"heat_retention", grade: id==="living" ? "C" : "B", rating: id==="living" ? "good" : "very good" }};
   for (const e of [`sensor.${id}_need`,`sensor.${id}_decision`,`select.${id}_override`,`sensor.${id}_tau`,`sensor.${id}_warm`,`sensor.${id}_pred`,`sensor.${id}_ret`]) entities[e] = { platform:"smart_heating", device_id:id };
 }
-states["sensor.smart_heating_status"] = { entity_id:"sensor.smart_heating_status", state:"heating", attributes:{ boiler_demand:true, reason:"2 room(s) approved", open_rooms:["Living room","Kitchen","Play room"] }};
+states["sensor.smart_heating_status"] = { entity_id:"sensor.smart_heating_status", state:"heating", attributes:{ boiler_demand:true, reason:"2 room(s) approved", heating_rooms:["Living room","Kitchen","Play room"], radiator_rooms:["Living room","Play room"], monitor_only:true }};
 states["select.smart_heating_mode"] = { entity_id:"select.smart_heating_mode", state:"auto", attributes:{ options:["off","one_cycle","auto"] }};
 states["switch.smart_heating_monitor_only"] = { entity_id:"switch.smart_heating_monitor_only", state:"on", attributes:{} };
 const logEntries = [
@@ -63,7 +63,7 @@ function mk(target, opts) {
   const h = JSON.parse(JSON.stringify(hass)); h.callService = () => Promise.resolve();
   if (opts.calibrated) h.states["sensor.cal"].attributes.calibrated = true;
   if (opts.st) Object.assign(h.states["sensor.smart_heating_status"].attributes, opts.st);
-  if (opts.control) h.states["switch.smart_heating_monitor_only"].state = "off";
+  if (opts.control) { h.states["switch.smart_heating_monitor_only"].state = "off"; h.states["sensor.smart_heating_status"].attributes.monitor_only = false; }
   if (opts.oneFloor) for (const [e, st] of Object.entries(h.states)) { if (st.attributes.floor != null && st.attributes.floor !== 1) { delete h.states[e]; delete h.entities[e]; } }
   if (opts.test != null) h.states["sensor.cal"].attributes.heat_test_min_left = opts.test;
   if (opts.temp) h.states["sensor.house_t"].state = opts.temp;

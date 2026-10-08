@@ -58,6 +58,7 @@ from .const import (
     CONF_HEATER_W,
     CONF_HEATER_ECO_W,
     CONF_RADIATOR,
+    CONF_CALLS_BOILER,
     HEATING_TYPES,
     HW_COMBI,
     HW_SYSTEMS,
@@ -622,6 +623,7 @@ def _room_schema(data: dict[str, Any], need_floor: bool = False, heating_type: s
     heat: dict = {}
     if heating_type != TYPE_ELECTRIC:
         heat[_opt(CONF_TRVS, data)] = _ent("climate", multiple=True)
+        heat[vol.Optional(CONF_CALLS_BOILER, default=data.get(CONF_CALLS_BOILER, True))] = sel.BooleanSelector()
     if heating_type == TYPE_HYBRID:
         heat[vol.Optional(CONF_RADIATOR, default=data.get(CONF_RADIATOR, True))] = sel.BooleanSelector()
     if heating_type in (TYPE_ELECTRIC, TYPE_HYBRID) or data.get(CONF_HEATERS):

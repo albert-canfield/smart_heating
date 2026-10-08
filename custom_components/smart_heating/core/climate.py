@@ -61,15 +61,18 @@ class OutdoorModel:
         return round(past, 1) if past is not None else None
 
 
-def house_means(temps: list[tuple[int, float | None]]) -> tuple[float | None, dict[int, float]]:
-    """Mean of all valid room temps, and per floor."""
-    valid = [(f, t) for f, t in temps if t is not None]
+def house_means(temps: list[tuple]) -> tuple[float | None, dict[int, float]]:
+    """Mean of the valid room temps, and per floor. An item is (floor, temp) or (floor, temp, counts):
+    a room with counts False (nothing heats it, e.g. a garage) is left out of the house mean
+    but still shown on its floor."""
+    valid = [(t[0], t[1], t[2] if len(t) > 2 else True) for t in temps if t[1] is not None]
     if not valid:
         return None, {}
     floors: dict[int, list[float]] = {}
-    for f, t in valid:
+    for f, t, _ in valid:
         floors.setdefault(f, []).append(t)
+    house = [t for _, t, counts in valid if counts] or [t for _, t, _ in valid]
     return (
-        round(sum(t for _, t in valid) / len(valid), 2),
+        round(sum(house) / len(house), 2),
         {f: round(sum(v) / len(v), 2) for f, v in sorted(floors.items())},
     )

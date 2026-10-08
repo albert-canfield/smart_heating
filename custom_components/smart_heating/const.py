@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.12.0"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.13.0"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -44,6 +44,7 @@ FORECAST_REFRESH_MIN = 30
 GAS_FIRING_SHARE = 0.7  # a modulating boiler burns about this share of its input on average
 GAS_HOB_KWH = 0.5  # starting value for gas used with the boiler off (hob), per day
 COLD_BASE = 15.5  # heating runs harder below this outdoor mean
+FREE_AFTER_MIN = 60  # minutes with the radiators off before cooling data counts
 HOUSE_BASE_KWH = 6.0  # starting value for the rest of the house's electricity, per day
 STEP_SETTLE_S = 90  # read house power this long after a heater switches
 FORECAST_RETRY_MIN = 5  # after a failed or empty fetch (e.g. the weather entity still starting)
@@ -65,6 +66,7 @@ CONF_HEATERS = "heaters"
 CONF_HEATER_W = "heater_power_w"
 CONF_HEATER_ECO_W = "heater_eco_power_w"
 CONF_RADIATOR = "radiator"
+CONF_CALLS_BOILER = "calls_boiler"  # off: the room heats when others call, never starts the boiler itself
 DEFAULT_HEATER_W = 2000.0
 
 # Options (tuning)

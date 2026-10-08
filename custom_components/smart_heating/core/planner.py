@@ -43,6 +43,7 @@ def make_plan(
 
     # Voice 2, per room.
     approved: list[tuple[RoomConfig, RoomSnapshot]] = []
+    riders: list[RoomConfig] = []  # rooms that may not start the boiler: they heat when another room calls
     season_off = house.season_off if house.season_off is not None else season_is_off(None, house.outdoor_mean, s.season_gate)
     for cfg, snap in rooms:
         need = needs[cfg.room_id]
@@ -62,11 +63,16 @@ def make_plan(
             if not allowed:
                 decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.VETOED, why)
                 continue
-        heating_this_room = bool((house.boiler_on and snap.valve_open and cfg.radiator) or snap.heater_on)
+        valve = snap.valve_open if cfg.has_trv else True  # a radiator without a TRV is always open
+        heating_this_room = bool((house.boiler_on and valve and cfg.radiator) or snap.heater_on)
         if need.level is not Level.MANUAL and not heating_this_room and _coasting(snap, need.deficit, s):
             decisions[cfg.room_id] = RoomDecision(
                 cfg.room_id, need, Verdict.DEFERRED, f"coasting {snap.trend:+.2f}/h"
             )
+            continue
+        if cfg.radiator and not cfg.calls_boiler and need.level is not Level.MANUAL:
+            riders.append(cfg)
+            decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.DEFERRED, "heats when another room calls the boiler")
             continue
         approved.append((cfg, snap))
         decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.APPROVED, why)
@@ -124,7 +130,7 @@ def make_plan(
         status, reason = "off", "away"
 
     if not boiler_control:
-        plan = _valve_only(rooms, approved, decisions, house, want_on, status, reason, s)
+        plan = _valve_only(rooms, approved, decisions, house, want_on, status, reason, s, riders)
         return _heaters(rooms, plan, heater_ids, house)
 
     # Hot water priority (never blocks safety).
@@ -147,11 +153,15 @@ def make_plan(
     # Valves (lazy): only move when the boiler will run, never during a min-run hold.
     if want_on and not hold:
         open_ids = {c.room_id for c, _ in approved}
+        for cfg in riders:  # the boiler runs for others: these rooms take their share
+            open_ids.add(cfg.room_id)
+            decisions[cfg.room_id] = RoomDecision(cfg.room_id, decisions[cfg.room_id].need, Verdict.PIGGYBACK, "heating while another room calls")
         # Piggyback: below target but not yet calling, and eligible for comfort/baseline.
         for cfg, snap in rooms:
             d = decisions[cfg.room_id]
             if (
                 cfg.room_id not in open_ids
+                and cfg.radiator  # topping up rides on the boiler: rooms without a radiator can't
                 and d.verdict is Verdict.IDLE
                 and _tops_up(snap, d.need.target, s)
                 and house.mode is not Mode.OFF
@@ -187,16 +197,21 @@ def _heaters(rooms, plan: Plan, heater_ids: set[str], house: HouseSnapshot) -> P
     return plan
 
 
-def _valve_only(rooms, approved, decisions, house: HouseSnapshot, want_on: bool, status: str, reason: str, s: Settings) -> Plan:
+def _valve_only(rooms, approved, decisions, house: HouseSnapshot, want_on: bool, status: str, reason: str, s: Settings,
+                riders: list[RoomConfig] = ()) -> Plan:
     any_safety = any(decisions[c.room_id].need.level is Level.SAFETY for c, _ in approved)
     if house.mode is Mode.OFF and not any_safety:
         approved, want_on, status, reason = [], False, "off", "mode off"
     open_ids = {c.room_id for c, _ in approved}
+    if approved:
+        for cfg in riders:
+            open_ids.add(cfg.room_id)
+            decisions[cfg.room_id] = RoomDecision(cfg.room_id, decisions[cfg.room_id].need, Verdict.PIGGYBACK, "heating while another room calls")
     if house.boiler_on and house.mode is not Mode.OFF:
         # Known to be firing anyway: let near-target rooms top up.
         for cfg, snap in rooms:
             d = decisions[cfg.room_id]
-            if cfg.room_id not in open_ids and d.verdict is Verdict.IDLE and _tops_up(snap, d.need.target, s):
+            if cfg.room_id not in open_ids and cfg.radiator and d.verdict is Verdict.IDLE and _tops_up(snap, d.need.target, s):
                 open_ids.add(cfg.room_id)
                 decisions[cfg.room_id] = RoomDecision(cfg.room_id, d.need, Verdict.PIGGYBACK, "topping up while boiler runs")
     for cfg, snap in rooms:

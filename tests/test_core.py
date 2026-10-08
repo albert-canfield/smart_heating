@@ -212,6 +212,26 @@ def test_satisfied_room_closed_while_boiler_runs():
     assert p.close_rooms == ["kitchen"]
 
 
+def test_wanted_rooms_include_valves_already_open():
+    # Valves move lazily: once open they are not in open_rooms, but the rooms are still wanted.
+    rooms = [
+        (LIVING, RoomSnapshot(temp=18.0, occupied=True, valve_open=True)),
+        (KITCHEN, RoomSnapshot(temp=20.0, occupied=True, valve_open=False)),
+    ]
+    p = make_plan(rooms, house(boiler_on=True), S)
+    assert p.boiler_on and p.open_rooms == [] and p.wanted_rooms == ["living"]
+    hold = make_plan([(LIVING, RoomSnapshot(temp=19.5, valve_open=True))], house(boiler_on=True, boiler_state_min=4), S)
+    assert hold.boiler_on and hold.wanted_rooms == []  # min run: the boiler is on, no room is asking
+
+
+def test_no_topping_up_without_a_radiator():
+    from dataclasses import replace
+    study = replace(KITCHEN, room_id="study", name="Study", radiator=False, heater=True)
+    rooms = [(LIVING, RoomSnapshot(temp=17.0, occupied=True, valve_open=True)), (study, RoomSnapshot(temp=18.7, occupied=True))]
+    p = make_plan(rooms, house(boiler_on=True), S)
+    assert p.rooms["study"].verdict is not Verdict.PIGGYBACK and "study" not in p.wanted_rooms
+
+
 def test_piggyback_room_near_target():
     rooms = [
         (LIVING, RoomSnapshot(temp=18.0, occupied=True, valve_open=False)),
@@ -504,6 +524,15 @@ def test_classify():
 
 
 # ---------- energy ----------
+
+def test_heating_hours_count_heating_not_hot_water():
+    # tick(now, today, boiler_on, hw_calling, heating_demand, meter, outdoor)
+    d = EnergyDay().tick(NOW, NOW.date(), True, False, True, None, None)
+    d = d.tick(NOW + timedelta(minutes=29), NOW.date(), True, False, True, None, None)  # 29 min heating
+    d = d.tick(NOW + timedelta(minutes=50), NOW.date(), True, True, False, None, None, heaters_on=True)  # hot water only
+    d = d.tick(NOW + timedelta(minutes=70), NOW.date(), False, False, False, None, None)  # 20 min of a heater
+    assert abs(d.heating_min - 49) < 0.01 and abs(d.runtime_min - 70) < 0.01, (d.heating_min, d.runtime_min)  # 21 min of it hot water
+
 
 def test_energy_day_runtime_burns_and_meter():
     d = EnergyDay()
@@ -827,3 +856,84 @@ def test_missing_outdoor_temperature_keeps_a_running_burst():
     w.step(NOW, _damp(), Outside(6.0, 4.0, "cloudy"), heating_season=True)
     assert w.step(NOW + timedelta(minutes=3), _damp(), Outside(None), heating_season=True).action == "open"
     assert w.step(NOW + timedelta(minutes=10), _damp(), Outside(None), heating_season=True).kind == "done"
+
+
+# ---------- radiators without a TRV (bypass) ----------
+from dataclasses import replace as _replace  # noqa: E402
+
+BYPASS = _replace(HALL, priority=Priority.A, comfort=19.0, calls_boiler=False)
+
+
+def test_radiator_without_trv_is_heated_while_the_boiler_runs():
+    # Rising while the boiler runs is the boiler's heat, not coasting on its own.
+    hall = _replace(HALL, priority=Priority.A, comfort=19.0)
+    p = make_plan([(hall, RoomSnapshot(temp=17.5, trend=1.0, occupied=True))], house(boiler_on=True), S)
+    assert p.rooms["hall"].verdict is Verdict.APPROVED, p.rooms["hall"].reason
+
+
+def test_room_that_may_not_start_the_boiler():
+    cold = RoomSnapshot(temp=16.0, occupied=True)
+    alone = make_plan([(BYPASS, cold)], house(), S)
+    assert not alone.boiler_on and alone.rooms["hall"].verdict is Verdict.DEFERRED
+    # Another room calls: the boiler runs and the bypass room takes its share.
+    both = make_plan([(BYPASS, cold), (LIVING, RoomSnapshot(temp=17.0, occupied=True, valve_open=False))], house(), S)
+    assert both.boiler_on and both.rooms["hall"].verdict is Verdict.PIGGYBACK and "hall" in both.wanted_rooms
+    # Frost protection and Heat now still start it.
+    frost = make_plan([(BYPASS, RoomSnapshot(temp=6.0))], house(), S)
+    assert frost.boiler_on
+    asked = make_plan([(BYPASS, RoomSnapshot(temp=16.0, override=Override.HEAT))], house(), S)
+    assert asked.boiler_on
+
+
+def test_need_says_which_target_applies_even_when_not_calling():
+    warm = evaluate_need(LIVING, RoomSnapshot(temp=19.2, occupied=True), house(), S)
+    assert not warm.calling and warm.level is Level.NONE and warm.source is Level.COMFORT  # in use, warm enough
+    empty = evaluate_need(LIVING, RoomSnapshot(temp=19.2), house(), S)
+    assert empty.source is Level.BASELINE
+    off = evaluate_need(LIVING, RoomSnapshot(temp=19.2, occupied=True), house(mode=Mode.OFF), S)
+    assert off.source is Level.SAFETY and off.target == S.safety
+    asked = evaluate_need(LIVING, RoomSnapshot(temp=17.0, override=Override.HEAT), house(), S)
+    assert asked.source is Level.MANUAL
+
+
+# ---------- electric heater precautions ----------
+from core.safety import HeaterWatch, heater_block  # noqa: E402
+
+
+def test_heater_needs_a_live_reading():
+    w = HeaterWatch()
+    assert heater_block(NOW, w, 18.0, NOW - timedelta(minutes=10), 19.0, False) is None
+    assert heater_block(NOW, w, None, NOW, 19.0, False).kind == "no_reading"
+    stale = heater_block(NOW, w, 18.0, NOW - timedelta(minutes=61), 19.0, True)
+    assert stale.kind == "stale" and stale.alert and "60 min" in stale.reason
+    assert heater_block(NOW, w, 18.0, NOW, 19.0, False, starting=True).kind == "starting"
+
+
+def test_heater_stops_when_the_reading_is_stuck_and_resumes_when_it_moves():
+    w = HeaterWatch()
+    w.update(NOW, True, 18.0)
+    t = NOW + timedelta(minutes=31)
+    w.update(t, True, 18.0)
+    assert heater_block(t, w, 18.0, t, 19.0, True).kind == "stuck"
+    w.update(t + timedelta(minutes=5), False, 18.0)
+    assert heater_block(t + timedelta(minutes=5), w, 18.0, t, 19.0, False).kind == "stuck"  # still the same reading
+    w.update(t + timedelta(minutes=20), False, 17.9)  # the sensor is alive again
+    assert heater_block(t + timedelta(minutes=20), w, 17.9, t + timedelta(minutes=20), 19.0, False) is None
+
+
+def test_heater_rests_after_two_hours_and_has_a_ceiling():
+    w = HeaterWatch()
+    w.update(NOW, True, 16.0)
+    t = NOW + timedelta(hours=2)
+    w.update(t, True, 18.0)
+    rest = heater_block(t, w, 18.0, t, 19.0, True)
+    assert rest.kind == "rest" and rest.alert
+    assert heater_block(t + timedelta(minutes=10), w, 18.0, t, 19.0, False).kind == "rest"
+    assert heater_block(t + timedelta(minutes=16), HeaterWatch(rest_until=w.rest_until), 18.0, t + timedelta(minutes=16), 19.0, False) is None
+    assert heater_block(NOW, HeaterWatch(), 20.0, NOW, 19.0, False).kind == "ceiling"  # target + 1
+    assert heater_block(NOW, HeaterWatch(), 24.0, NOW, 25.0, False).kind == "ceiling"  # never above 24
+
+
+def test_house_mean_leaves_out_rooms_nothing_heats():
+    avg, floors = house_means([(0, 19.0), (0, 9.0, False), (1, 21.0)])
+    assert avg == 20.0 and floors == {0: 14.0, 1: 21.0}

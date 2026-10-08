@@ -76,6 +76,7 @@ class RoomConfig:
     comfort: float = 19.0
     has_trv: bool = True
     radiator: bool = True  # has a radiator on the boiler circuit
+    calls_boiler: bool = True  # off (e.g. a bypass radiator): heats when others call, never starts the boiler itself
     heater: bool = False  # has electric heater(s) Smart Heating can switch
 
 
@@ -115,6 +116,7 @@ class NeedResult:
     calling: bool
     deficit: float  # target - temp (positive = too cold)
     reason: str
+    source: Level | None = None  # which target applies (frost, baseline, comfort, manual), even when not calling
 
 
 @dataclass
@@ -136,7 +138,13 @@ class Plan:
 
     @property
     def open_rooms(self) -> list[str]:
+        """Valves to open on this tick (valves move lazily: one already open is not listed)."""
         return [r for r, d in self.rooms.items() if d.open_valve is True]
+
+    @property
+    def wanted_rooms(self) -> list[str]:
+        """Rooms the plan wants heated (approved, topping up, or on a heater), whether or not heat flows yet."""
+        return [r for r, d in self.rooms.items() if d.heater_on or d.verdict in (Verdict.APPROVED, Verdict.PIGGYBACK)]
 
     @property
     def heater_rooms(self) -> list[str]:

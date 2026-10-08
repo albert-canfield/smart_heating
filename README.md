@@ -77,7 +77,7 @@ Smart Heating heats from day one with sensible defaults and learns your home in 
 
 # Documentation
 
-Version 0.12.0. How it starts:
+Version 0.13.0. How it starts:
 
 1. **Heating from day one** (or **Watching** if you picked *Watch first*: it decides and logs, never touches the boiler or TRVs, until you tap **Start heating** and confirm).
 2. **Learning in the background**: each room's heat-loss time constant, free-heat gain and warm-up rate, from normal life. Heating decisions don't wait for it.
@@ -133,7 +133,7 @@ Both are also entities (`number.smart_heating_house_target`, `number.<room>_targ
 
 ### Windows and humidity
 
-A small chip on the card says **Open windows 10 min** or **Close windows**; tap it for the reason. The same advice is `sensor.smart_heating_window_advice` and, if you choose, a phone alert.
+A small chip next to the status says **Open 10min** or **Close**; tap it for the reason. The same advice is `sensor.smart_heating_window_advice` and, if you choose, a phone alert.
 
 - **Drying**: when a room is above 65% humidity and the air outside is clearly drier. This is judged on dew point, not relative humidity: cold Scottish rain air at 95% holds far less water than a warm room at 70%, so light rain does not stop it (open on the sheltered side). Downpours, storms, hail and gales do.
 - **Without wasting heat**: a short burst, wide open, then closed. The walls and furniture keep their heat and the heating only rewarms the air. The burst is 5 min below 0°, 10 min up to 10°, 15 min up to 15°, 25 min when mild, and half that in strong wind. It is never advised while the house is heating (boiler or electric heaters), at night or while away, and at most every 2 hours. A **Close windows** reminder follows when the time is up, or straight away if a storm starts or everyone leaves. Advice in progress survives a restart.
@@ -161,6 +161,13 @@ Combinations that work:
 Thermostat style: **Setpoint** (recommended: it gets the target and regulates, so it stays sensible if Home Assistant stops) or **On / off** (heat at 25° or off).
 
 Electric heaters: a smart plug is switched on/off; a smart heater gets the room target and hvac off when not needed. Enter the heater's power (e.g. 2000 W) and optional eco power (e.g. 1000 W, used when a smart heater reports an eco preset). If the plug or heater has its own power sensor it is found automatically and measured power is used instead. Sensors: electricity today (kWh, with a projection to midnight), cost today, and per-room energy today.
+
+**Electric heater safety.** A heater only runs with a live temperature behind it. A room with a heater needs a thermometer, a TRV or a smart heater that reports temperature (the room form refuses it otherwise), and the heater is kept off, with a phone alert and a Repairs entry, when:
+- the room's reading hasn't been reported for 60 minutes (a thermometer with a dead battery often keeps its last value instead of going unavailable),
+- the heater has been on for 30 minutes and the reading hasn't moved at all (a stuck sensor, or a heater that isn't heating),
+- it has run for 2 hours without a break: it then rests for 15 minutes,
+- Home Assistant has only just started and readings may not be live yet.
+It also never heats a room above its target + 1°, nor above 24°. These only ever switch a heater off, never on, and it resumes by itself once readings are live and moving. Radiators and the boiler are not affected.
 
 Other fallbacks:
 - **No room thermometer**: the TRVs' or smart heaters' own reading is used (less accurate near the radiator).
@@ -215,7 +222,8 @@ For each area it picks up: the area's own temperature and humidity sensors (Sett
 | Priority | A living/sleeping, B occasional, C transit/service |
 | Comfort temperature | target while the room is in use |
 | Temperature sensor | pre-filled; optional if the room has TRVs |
-| TRVs | pre-filled with the area's `climate` entities; empty = dumb radiators, monitored only |
+| TRVs | pre-filled with the area's `climate` entities; empty = a radiator without a valve, always open while the boiler runs |
+| Can switch the boiler on | on by default; off for an always-open radiator such as a bypass in the hall: it warms whenever another room calls, but never starts the boiler by itself (frost protection and Heat now still can) |
 | Presence sensors, lights, media players | pre-filled from the area |
 | Comfort schedule | optional, e.g. bedroom evenings |
 
@@ -234,7 +242,7 @@ House device:
 - `switch.smart_heating_monitor_only`: on = decide and log only
 - `number.smart_heating_house_target`: house target (shifts every room)
 - services `smart_heating.heat_test` (start / stop), `smart_heating.start_control` (leave watch mode) and `smart_heating.relearn` (`rooms: ["Master Bedroom"]`)
-- `sensor.smart_heating_status`: heating / idle / paused / waiting / off / away / fault / disabled (+ reason, calling/open rooms)
+- `sensor.smart_heating_status`: heating / idle / paused / waiting / off / away / fault / disabled (+ reason; from device states: `heating_rooms` (rooms really getting heat), `radiator_rooms` (a radiator while the boiler heats it: TRV open, or no TRV), `heater_rooms` (electric heaters that are on); from the plan: `wanted_rooms`, `calling_rooms`, `open_rooms` / `close_rooms` (valves being moved this minute); `boiler_called`, `boiler_hold_until` while boiler protection holds it back)
 - `sensor.smart_heating_decision_log`: latest decision; last 50 entries in attributes (not stored in the database)
 - `binary_sensor.smart_heating_boiler_demand`
 - `sensor.smart_heating_house_temperature` (+ every room's reading)
@@ -242,6 +250,7 @@ House device:
 - `sensor.smart_heating_outdoor_day_mean`: observed last 12 h blended with forecast next 12 h. Attributes: `now`, `observed_mean_12h`, `forecast_mean_12h`, `forecast_mean_24h`, `forecast_min_12h`, `forecast_min_24h`, `forecast_points`
 - `sensor.smart_heating_forecast_minimum_24h`
 - `sensor.smart_heating_calibration` (% overall, per room in attributes), `binary_sensor.smart_heating_calibrated`
+- `sensor.smart_heating_heating_hours_today`: hours today the heating was on (boiler heating rooms, or any electric heater), hot water left out
 - `sensor.smart_heating_window_advice`: `open` / `close` / `none`. Attributes: `advice` (`dry`, `cool`, or for close `done`, `storm`, `warmer`, `cooled`, `away`, `hot`), `reason`, `rooms`, `minutes`, `until`, outdoor humidity and dew point, weather and wind (each room's humidity and dew point are in the diagnostics). For automations, for example a light by the door that turns blue on `open`
 - `sensor.smart_heating_house_heat_loss_time_constant` (hours, median of rooms)
 - `sensor.smart_heating_gas_today`: **heating** gas today (kWh), `sensor.smart_heating_gas_cost_today` its cost, `sensor.smart_heating_hot_water_gas_today`, and with a smart meter `sensor.smart_heating_other_gas_today` (hob and anything unassigned) and `sensor.smart_heating_house_gas_today` (the meter). Heating + hot water + other = the meter
@@ -288,7 +297,7 @@ layout: compact        # compact (default): summary, tap to expand; full: large 
 
 All options are also in the card's visual editor. The title and icon share the top line with the status, so they cost no extra space.
 
-Compact shows house temperature (always the house average), status with small indicators (flame = boiler burning, outline flame = boiler called, radiator = rooms heating, bolt = electric heaters on, drop = hot water heating, moon = night, crossed house = away, eye = watching only), floor averages (only when rooms span more than one floor) and the mode buttons (Off grey, One cycle amber, Auto orange when selected); the background tint follows the house temperature (blue when cold, through green and yellow, to orange when warm). Tap it to expand rooms (inside the house outline, by floor), the heating's energy and the log. The bottom shows only what the heating used today in kWh and pounds, with a flame for gas and a bolt for electricity (both for hybrid); the small (i) next to it opens the breakdown: heating rows with their hours count, hot water and the hob are shown greyed and aren't counted, with subtotals per fuel, plus the day's total heating cost for hybrid. A small person icon marks rooms in use (presence, media, or a light at night). When there is window advice, a small chip next to the status says **Open windows 10 min** or **Close windows**; tap it for the reason. Tap a room for its details (need, target, trend; predictions, insulation and warm-up appear once learned) and Heat now / Turn off / Back to auto. **Show log** lists recent decisions.
+Compact shows house temperature (always the house average), status with small indicators (flame = boiler burning, outline flame = boiler called, radiator = rooms heating, bolt = electric heaters on, drop = hot water heating, moon = night, crossed house = away, eye = watching only), floor averages (only when rooms span more than one floor) and the mode buttons (Off grey, One cycle amber, Auto orange when selected); the background tint follows the house temperature (blue when cold, through green and yellow, to orange when warm). Tap it to expand rooms (inside the house outline, by floor), the heating's energy and the log. The bottom shows only what the heating used today in kWh and pounds, with a flame for gas and a bolt for electricity (both for hybrid); the small (i) next to it opens the breakdown: heating rows with their hours count, hot water and the hob are shown greyed and aren't counted, with subtotals per fuel, plus the day's total heating cost for hybrid. A small person icon marks rooms in use (presence, media, or a light at night). When there is window advice, a small chip next to the status says **Open 10min** or **Close**; tap it for the reason. Tap a room for its panel: its temperature and state on top (a room with no reading says **No temperature**, one with nothing to heat it **Watched only**, a heater held off by a safety check **Heater stopped**, with the reason), and a scale with the frost, night, empty and in-use temperatures, the one that applies now lit up. Then its **Target when in use** with **Auto / Heat now / Off** under it. **Room profile** folds out why the room has the target it has, where it would be in 2 and 8 hours with the heating off, and small tiles for insulation, warm-up and free heat (plus the heater and its energy, or an always-open radiator, where there is one). **Show log** lists recent decisions.
 
 ## Logs and diagnostics
 

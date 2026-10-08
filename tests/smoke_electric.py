@@ -211,10 +211,32 @@ async def main() -> None:
     c.rooms["cafe"].override = _coord.Override.HEAT
     await c.async_refresh()
     await asyncio.sleep(0.3); await hass.async_block_till_done()
+    # Precaution: just after a start the heaters wait for live readings.
+    assert c.rooms["cafe"].heater_block.kind == "starting" and ("switch", "turn_on", {"entity_id": "switch.cafe_heater"}) not in calls
+    c._started_at -= timedelta(minutes=5)
+    await c.async_refresh()
+    await asyncio.sleep(0.3); await hass.async_block_till_done()
     print("calls:", calls)
     assert ("switch", "turn_on", {"entity_id": "switch.cafe_heater"}) in calls
     assert any(cl[0] == "climate" and cl[2].get("entity_id") == "climate.cafe_panel" and cl[2].get("hvac_mode") == "heat" for cl in calls)
     assert c.data.rooms["cafe"].heater_on and not c.data.boiler_on
+
+    # Precaution: a thermometer that stops reporting (61 min) switches the heater off.
+    st = hass.states.get("sensor.cafe_temperature")
+    old = dt_util.utcnow() - timedelta(minutes=61)
+    object.__setattr__(st, "last_reported", old)
+    object.__setattr__(st, "last_updated", old)
+    hass.states.async_set("switch.cafe_heater", "on")
+    calls.clear()
+    await c.async_refresh()
+    await asyncio.sleep(0.3); await hass.async_block_till_done()
+    print("stale reading ->", c.rooms["cafe"].heater_block, "| calls:", calls[:2])
+    assert c.rooms["cafe"].heater_block.kind == "stale" and not c.data.rooms["cafe"].heater_on
+    assert ("switch", "turn_off", {"entity_id": "switch.cafe_heater"}) in calls
+    hass.states.async_set("sensor.cafe_temperature", "16.0", {"device_class": "temperature"}, force_update=True)  # live again
+    await c.async_refresh()
+    await asyncio.sleep(0.3); await hass.async_block_till_done()
+    assert c.rooms["cafe"].heater_block is None and c.data.rooms["cafe"].heater_on
 
     # Energy: measured plug 1800 W + panel in eco (1000 W rated) for 30 min.
     hass.states.async_set("sensor.cafe_heater_power", "1800", {"unit_of_measurement": "W"})

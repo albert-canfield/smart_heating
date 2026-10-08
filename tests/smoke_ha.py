@@ -506,6 +506,21 @@ async def main() -> None:
     assert c.windows.advice.kind == "done" and [w for w, _ in pushes] == ["wife", "wife"] and not c._window_open_to
     c.mode = Mode.AUTO
 
+    # What really heats, from device states: an open TRV and a radiator without one (always open,
+    # like a bypass) while the boiler heats; a closed TRV does not.
+    hass.states.async_set("switch.heating", "on")
+    hass.states.async_set("climate.living_trv", "heat", {"temperature": 22})
+    hass.states.async_set("climate.bed_trv", "heat", {"temperature": 5})
+    c._heat_now(dt_util.utcnow(), c.data)
+    print("heating now:", c.heating_rooms, "| hold:", c.boiler_hold_until)
+    assert set(c.heating_rooms) == {"living", "hall"}, c.heating_rooms
+    from custom_components.smart_heating.sensor import HouseStatus
+    st = HouseStatus(c).extra_state_attributes
+    assert set(st["heating_rooms"]) == {"Living room", "Hall"} and st["heater_rooms"] == [] and "wanted_rooms" in st
+    hass.states.async_set("switch.heating", "off")
+    c._heat_now(dt_util.utcnow(), c.data)
+    assert c.heating_rooms == []
+
     # The log survives a restart.
     await c.async_stop()
     c2 = HeatingCoordinator(hass, entry)

@@ -25,6 +25,9 @@ class EnergyDay:
     other_min: float = 0.0
     burns: int = 0
     was_on: bool = False
+    heating_min: float = 0.0  # wall clock: boiler burning for heating, or any electric heater on
+    heater_min: float = 0.0  # wall clock: any electric heater on
+    heaters_were_on: bool = False
     outdoor_sum: float = 0.0
     outdoor_n: int = 0
     last_tick: str | None = None
@@ -42,14 +45,20 @@ class EnergyDay:
         heating_demand: bool,
         meter: float | None,
         outdoor: float | None,
+        heaters_on: bool = False,
     ) -> "EnergyDay":
         """Advance; returns a fresh EnergyDay when the local day rolls over."""
         if self.day != today.isoformat():
-            fresh = EnergyDay(day=today.isoformat(), meter_start=meter, meter_last=meter, was_on=boiler_on)
+            fresh = EnergyDay(day=today.isoformat(), meter_start=meter, meter_last=meter, was_on=boiler_on,
+                              heaters_were_on=heaters_on)
             fresh.last_tick = now.isoformat()
             return fresh
         if self.last_tick:
             dt_min = (now - datetime.fromisoformat(self.last_tick)).total_seconds() / 60
+            if 0 < dt_min < 30 and ((self.was_on and heating_demand) or self.heaters_were_on):
+                self.heating_min += dt_min
+            if 0 < dt_min < 30 and self.heaters_were_on:
+                self.heater_min += dt_min
             if 0 < dt_min < 30 and self.was_on:
                 self.runtime_min += dt_min
                 if hw_calling:
@@ -67,6 +76,7 @@ class EnergyDay:
         if boiler_on and not self.was_on:
             self.burns += 1
         self.was_on = boiler_on
+        self.heaters_were_on = heaters_on
         if meter is not None:
             self.meter_start, self.meter_last, self.meter_carry = meter_step(
                 self.meter_start, self.meter_last, self.meter_carry, meter)

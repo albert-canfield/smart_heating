@@ -62,7 +62,9 @@
     hass.devices.house = { name: "Smart Heating" };
     add("house", "sensor.sh_status", o.status, { reason: "", boiler_demand: o.demand ?? o.status === "heating",
       boiler_firing: o.firing ?? o.status === "heating", has_boiler: true, hot_water: !!o.hw, night: !!o.night, away: false,
-      open_rooms: o.status === "heating" ? ["living", "play"] : [], heater_rooms: o.status === "heating" ? ["kitchen"] : [] });
+      open_rooms: [], heater_rooms: o.status === "heating" ? ["Kitchen"] : [], monitor_only: !!o.monitor, boiler_called: o.status === "heating",
+      radiator_rooms: o.status === "heating" ? ["Living room", "Play room"] : [], wanted_rooms: o.status === "heating" ? ["Living room", "Play room", "Kitchen"] : [],
+      heating_rooms: o.status === "heating" ? ["Living room", "Play room", "Kitchen"] : [] });
     add("house", "sensor.sh_house_temperature", o.temp, { kind: "house_temperature" });
     add("house", "sensor.sh_outdoor", "8.6", { kind: "outdoor_day_mean", now: 7.9 });
     [[0, 17.9], [1, 18.9], [2, 19.1]].forEach(([f, t]) => add("house", `sensor.sh_floor_${f}`, t, { kind: "floor_temperature", floor: f }));
@@ -75,14 +77,17 @@
     add("house", "sensor.sh_house_retention", "71", { kind: "heat_retention", scope: "house", grade: "B" });
     add("house", "sensor.sh_gas_today", "16.8", { kind: "gas_today", heating_hours: 3.4 });
     add("house", "sensor.sh_gas_cost_today", "1.31", { kind: "gas_cost_today" });
+    add("house", "sensor.sh_heating_hours_today", "3.4", { kind: "heating_hours_today" });
     add("house", "sensor.sh_electric_today", "1.4", { kind: "electric_today", heater_hours: 0.8 });
     add("house", "sensor.sh_electric_cost_today", "0.36", { kind: "electric_cost_today" });
     for (const [id, name, floor, temp, verdict, occupied, x = {}] of ROOMS) {
       const v = o.status === "heating" ? verdict : "idle";
       hass.devices[id] = { name };
-      add(id, `sensor.${id}_need`, occupied ? "comfort" : "baseline", { floor, priority: "a", temperature: temp, target: occupied ? 19 : 17,
+      add(id, `sensor.${id}_need`, v === "approved" ? "comfort" : "none", { floor, priority: "a", temperature: temp,
+        target: o.mode === "off" ? 12 : occupied ? 19 : 17, target_source: o.mode === "off" ? "safety" : occupied ? "comfort" : "baseline",
         comfort: 19, trend: occupied ? 0.6 : -0.1, occupied: !!occupied, has_trv: x.trv !== false, has_heater: !!x.heater,
         heater_on: !!x.heater && o.status === "heating", deficit: occupied ? +(19 - temp).toFixed(1) : 0,
+        heating_now: o.status === "heating" && (verdict === "approved" || verdict === "piggyback"),
         temperature_entity: `sensor.${id}_t`, temperature_source: "sensor" });
       add(id, `sensor.${id}_decision`, v, { valve_command: v === "approved", reason: x.reason || (occupied ? "heating: occupied" : "at baseline") });
       add(id, `select.${id}_override`, "auto", {});
@@ -91,7 +96,7 @@
       const [g, rating, tau] = x.grade || ["C", "good", 61];
       add(id, `sensor.${id}_tau`, tau, { kind: "heat_loss_tau", free_heat_gain: 5.2, calibration: 100 });
       add(id, `sensor.${id}_warm`, "1.3", { kind: "warm_up_rate" });
-      add(id, `sensor.${id}_pred`, "18.5", { kind: "predicted_2h", predicted_8h: 17.9, hours_to_baseline: 11.5 });
+      add(id, `sensor.${id}_pred`, "18.5", { kind: "predicted_2h", predicted_8h: 17.9, hours_to_baseline: 11.5, baseline: 17 });
       add(id, `sensor.${id}_ret`, "70", { kind: "heat_retention", grade: g, rating, settled: true, grade_range: g });
       hass.states[`sensor.${id}_t`] = { entity_id: `sensor.${id}_t`, state: String(temp), attributes: { friendly_name: `${name} thermometer` } };
     }
@@ -110,6 +115,7 @@
   el.style.display = which === "trio" ? "grid" : "block";
   document.documentElement.style.background = getComputedStyle(el).backgroundImage !== "none" ? "#eef1f6" : "#121722";
   const calAttrs = { rooms_done: 7, rooms_needed: 11, eta_hours: 30, cooling_hours: 24, cooling_hours_needed: 24,
+    heat_test_cap: 21.5, heat_test_rise: 1, heat_test_max_min: 135, cooling_after_min: 60, night_cooling_hours: 8,
     variety_c: 2, variety_needed_c: 2, heating_hours: 1.2, heating_hours_needed: 2, heating_hours_left: 0.8,
     cooling_days: 4, cooling_days_needed: 4, uncertainty_pct: 38, uncertainty_needed_pct: 25 };
   if (which === "trio") {
@@ -117,7 +123,7 @@
     show("t2", house({ status: "heating", temp: "20.4", hw: true, night: true }), { title: "Heating" });
     show("t3", house({ status: "off", temp: "18.9", mode: "off", firing: false, demand: false }));
   } else if (which === "rooms") {
-    show("r1", house({ status: "heating", temp: "19.4" }), {}, { _expanded: true, _open: "Kitchen" });
+    show("r1", house({ status: "heating", temp: "19.4" }), {}, { _expanded: true, _open: "Kitchen", _aboutOpen: new Set(["Kitchen"]) });
   } else {
     show("c1", house({ status: "heating", temp: "18.1", cal: { pct: 64, attrs: calAttrs } }), {}, { _calOpen: true });
   }

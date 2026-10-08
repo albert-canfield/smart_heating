@@ -11,6 +11,7 @@ from homeassistant.util import dt as dt_util
 
 from homeassistant.const import EntityCategory
 
+from .const import FREE_AFTER_MIN, HEAT_TEST_CAP, HEAT_TEST_MIN, HEAT_TEST_RISE
 from .core import Level, Verdict, insulation
 from .entity import HouseEntity, RoomEntity
 
@@ -31,9 +32,15 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddC
                                 "watching_only": c.monitor_only, "heat_test_min_left": c.heat_test_left_min,
                                 "can_heat_test": c.boiler_control or c.has_trvs or c.has_heaters,
                                 "competing_automations": c.competing_automations,
+                                "heat_test_cap": HEAT_TEST_CAP, "heat_test_rise": HEAT_TEST_RISE,
+                                "heat_test_max_min": HEAT_TEST_MIN, "cooling_after_min": FREE_AFTER_MIN,
+                                "night_cooling_hours": c.night_cooling_hours,
                                 **c.calibration_info,
                                 "rooms": {r.cfg.name: round(r.model.progress * 100) for r in c.rooms.values()}}),
         Metric(c, "house_heat_loss_tau", lambda c: c.house_tau, UnitOfTime.HOURS, kind="house_tau"),
+        Metric(c, "heating_hours_today", lambda c: round(c.energy.heating_min / 60, 2), UnitOfTime.HOURS,
+               kind="heating_hours_today", device_class=SensorDeviceClass.DURATION,
+               state_class=SensorStateClass.TOTAL_INCREASING),
     ]
     kwh = dict(device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING)
     money = dict(device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL, daily=True)
@@ -47,14 +54,14 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddC
     gas = [
         Metric(c, "gas_today", lambda c: c.gas_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="gas_today", **kwh,
                attrs=lambda c: {"source": c.gas_source, "measured": c.gas_measured,
-                                "heating_hours": round(c.energy.use_hours(15.5)["heating"], 2),
+                                "heating_hours": round(c.energy.heat_runtime_min / 60, 2),  # wall clock, as the footer
                                 "boiler_hours": round(c.energy.runtime_min / 60, 2), "boiler_starts": c.energy.burns,
                                 **gas_rates(c), "yesterday": c.gas_yesterday}),
-        Metric(c, "gas_cost_today", lambda c: c.gas_cost, "GBP", kind="gas_cost_today", **money,
+        Metric(c, "gas_cost_today", lambda c: c.gas_cost, c.hass.config.currency, kind="gas_cost_today", **money,
                attrs=lambda c: {"price_per_kwh": round(c.gas_price_now, 4), "price_from": c.gas_price_from,
                                 "yesterday": round(c.gas_yesterday["heating_kwh"] * c.gas_price_now, 2) if c.gas_yesterday else None}),
         Metric(c, "hot_water_gas_today", lambda c: c.gas_hw_kwh, UnitOfEnergy.KILO_WATT_HOUR, kind="hot_water_gas_today", **kwh,
-               attrs=lambda c: {"hot_water_hours": round(c.energy.use_hours(15.5)["hot_water"], 2),
+               attrs=lambda c: {"hot_water_hours": round(c.energy.hw_runtime_min / 60, 2),  # wall clock, like heating_hours
                                 "cost": round(c.gas_hw_kwh * c.gas_price_now, 2)}),
         Metric(c, "boiler_runtime_today", lambda c: round(c.energy.runtime_min), UnitOfTime.MINUTES, kind="runtime_today"),
         Metric(c, "boiler_burns_today", lambda c: c.energy.burns, None, kind="burns_today"),
@@ -73,12 +80,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddC
         house += [
             Metric(c, "electric_today", lambda c: round(c.elec_kwh, 3), UnitOfEnergy.KILO_WATT_HOUR, kind="electric_today", **kwh,
                    attrs=lambda c: {"measured": c.electric_measured, "source": c.elec_source, "projected_today_kwh": c.elec_projected_kwh,
-                                    "heater_hours": round(sum(c.elec_hours.values()), 2),
+                                    "heater_hours": round(c.energy.heater_min / 60, 2),  # wall clock: any heater on
                                     "power_now_w": round(sum(c.heater_power_w(r) for r in c.rooms.values() if r.heaters)),
                                     "heater_kw": c.elec_rates.rates, "learned_from_live_power": c.step_kw,
                                     "meter_days": c.elec_rates.days, "meter_error": c.elec_rates.error,
                                     "yesterday": c.elec_yesterday}),
-            Metric(c, "electric_cost_today", lambda c: c.elec_cost, "GBP", kind="electric_cost_today", **money,
+            Metric(c, "electric_cost_today", lambda c: c.elec_cost, c.hass.config.currency, kind="electric_cost_today", **money,
                    attrs=lambda c: {"price_per_kwh": round(c.elec_price_now, 4),
                                     "projected_today": round((c.elec_projected_kwh or 0) * c.elec_price_now, 2) if c.elec_projected_kwh else None}),
         ]
@@ -166,12 +173,15 @@ class HouseStatus(HouseEntity, SensorEntity):
             return {}
         return {
             "reason": p.reason,
-            "boiler_demand": p.boiler_on,
+            "boiler_demand": p.boiler_on and c.enabled,
+            "boiler_called": c.boiler_called,
+            "boiler_hold_until": c.boiler_hold_until.isoformat() if c.boiler_hold_until else None,
             "mode": c.mode.value,
             "one_cycle_wait": c.one_cycle_wait,
             "one_cycle_all": c.one_cycle_all,
             "season_off": c._season_off,
             "away": c.away,
+            "away_reason": c.away_reason if c.away else None,
             "profile": c.profile,
             "monitor_only": c.monitor_only,
             "calibrated": c.calibrated,
@@ -179,7 +189,12 @@ class HouseStatus(HouseEntity, SensorEntity):
             "enabled": c.enabled,
             "open_rooms": [c.rooms[r].cfg.name for r in p.open_rooms],
             "close_rooms": [c.rooms[r].cfg.name for r in p.close_rooms],
-            "heater_rooms": [c.rooms[r].cfg.name for r in p.heater_rooms],
+            # From device states: radiators while the boiler heats them, heaters that are on.
+            "heating_rooms": [c.rooms[r].cfg.name for r in c.heating_rooms],
+            "radiator_rooms": [c.rooms[r].cfg.name for r in c.radiator_rooms],
+            "heater_rooms": [c.rooms[r].cfg.name for r in c.heater_rooms_on],
+            # What the plan wants heated, whether or not heat flows yet (Watching only: "would heat").
+            "wanted_rooms": [c.rooms[r].cfg.name for r in p.wanted_rooms],
             "boiler_firing": c.boiler_firing,
             "hot_water": c.hot_water_on,
             "night": c.night_now,
@@ -216,9 +231,11 @@ class RoomNeed(RoomEntity, SensorEntity):
             "comfort": self.coordinator.room_comfort(room),
             "comfort_configured": room.cfg.comfort,
             "temperature": self.coordinator.room_temp(room),
-            "temperature_entity": room.temp_entity or (room.trvs[0] if room.trvs else None),
-            "temperature_source": "room sensor" if room.temp_entity else ("TRV" if room.trvs else None),
+            "temperature_entity": room.temp_entity or (room.trvs + [h for h in room.heaters if h.startswith("climate.")] or [None])[0],
+            "temperature_source": "room sensor" if room.temp_entity
+            else ("TRV" if len(room.trvs) == 1 else "TRVs" if room.trvs else "heater" if any(h.startswith("climate.") for h in room.heaters) else None),
             "target": d.need.target,
+            "target_source": d.need.source.value if d.need.source else None,  # frost (safety), baseline, comfort (in use), manual
             "deficit": d.need.deficit,
             "calling": d.need.calling,
             "trend": room.trend.rate(),
@@ -227,8 +244,13 @@ class RoomNeed(RoomEntity, SensorEntity):
             "override_until": room.override_until.isoformat() if room.override_until else None,
             "has_trv": room.cfg.has_trv,
             "has_heater": bool(room.heaters),
-            "heater_on": d.heater_on,
+            "heater_on": any(self.coordinator._heater_entity_on(h) for h in room.heaters),  # the device, not our command
+            "heater_wanted": d.heater_on,
+            "heating_now": self.room_id in self.coordinator.heating_rooms,  # really getting heat (device states)
             "radiator": room.cfg.radiator,
+            "calls_boiler": room.cfg.calls_boiler,
+            "room_state": self.coordinator.room_state(room),
+            "heater_stopped": room.heater_block.reason if room.heater_block and room.heater_block.shown else None,
             "reason": d.need.reason,
         }
 
@@ -385,7 +407,8 @@ class RoomPredicted(RoomEntity, SensorEntity):
         c = self.coordinator
         if tin is None or tout is None:
             return {}
-        base = c.effective_settings.baseline_day
+        s = c.effective_settings
+        base = s.baseline_night if c.night_now else s.baseline_day
         return {
             "kind": "predicted_2h",
             "outdoor_used": round(tout, 1),
@@ -448,6 +471,7 @@ class RetentionSensor(HouseEntity, SensorEntity):
         d["scope"] = self._scope
         if self._floor is not None:
             d["floor"] = self._floor
+        d["settled"] = self.coordinator.calibrated  # a house or floor grade firms up once most rooms are learned
         if self._scope == "house":
             d["weakest_rooms"] = self.coordinator.weakest_rooms()
             d["note"] = "Comparative: upper floors gain heat from below, so they rate better than their fabric alone."

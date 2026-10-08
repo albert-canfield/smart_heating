@@ -312,7 +312,8 @@
             "heaters": "Electric heaters",
             "heater_power_w": "Heater power",
             "heater_eco_power_w": "Heater eco power",
-            "radiator": "Has a boiler radiator"
+            "radiator": "Has a boiler radiator",
+            "calls_boiler": "Can switch the boiler on"
           },
           "description": "Floor: {floor}.\n\nThermometer candidates: {detected}.",
           "data_description": {
@@ -329,7 +330,8 @@
             "heaters": "Smart plugs or smart heaters Smart Heating switches on and off.",
             "heater_power_w": "Full power from the label, e.g. 2000 W. Not needed if the plug measures power.",
             "heater_eco_power_w": "Optional. Used when a smart heater reports eco mode, e.g. 1000 W.",
-            "radiator": "Off if this room has only electric heat."
+            "radiator": "Off if this room has only electric heat.",
+            "calls_boiler": "Off for a radiator that is always open, like a bypass radiator in the hall: it warms whenever another room calls, but never starts the boiler by itself. Frost protection and Heat now still can."
           }
         },
         "details": {
@@ -349,7 +351,8 @@
             "heaters": "Electric heaters",
             "heater_power_w": "Heater power",
             "heater_eco_power_w": "Heater eco power",
-            "radiator": "Has a boiler radiator"
+            "radiator": "Has a boiler radiator",
+            "calls_boiler": "Can switch the boiler on"
           },
           "data_description": {
             "floor": "Only asked when the area has no floor.",
@@ -365,7 +368,8 @@
             "heaters": "Smart plugs or smart heaters Smart Heating switches on and off.",
             "heater_power_w": "Full power from the label, e.g. 2000 W. Not needed if the plug measures power.",
             "heater_eco_power_w": "Optional. Used when a smart heater reports eco mode, e.g. 1000 W.",
-            "radiator": "Off if this room has only electric heat."
+            "radiator": "Off if this room has only electric heat.",
+            "calls_boiler": "Off for a radiator that is always open, like a bypass radiator in the hall: it warms whenever another room calls, but never starts the boiler by itself. Frost protection and Heat now still can."
           }
         }
       },
@@ -485,6 +489,9 @@
       },
       "house_heat_loss_tau": {
         "name": "House heat-loss time constant"
+      },
+      "heating_hours_today": {
+        "name": "Heating hours today"
       },
       "gas_today": {
         "name": "Heating gas today"
@@ -642,6 +649,14 @@
     }
   },
   "issues": {
+    "room_no_temperature": {
+      "title": "{room} has no temperature",
+      "description": "{room} has had no temperature reading for 30 minutes, so Smart Heating is keeping its electric heater off. Check its thermometer (battery, range, or the entity in the room's settings). This clears by itself when readings return."
+    },
+    "heater_stopped": {
+      "title": "{room}: electric heater kept off",
+      "description": "Smart Heating is keeping the heater in {room} off: {reason}. Check the room's thermometer (battery, range) and the heater. It switches back on by itself once the readings are live and moving again."
+    },
     "hw_same_as_boiler": {
       "title": "Hot water sensor is the boiler's own signal",
       "description": "The hot water setting uses {entity}, which is also the boiler's switch or running sensor. It says the boiler is running, not that the tank wants heat, so Smart Heating ignores it for hot water priority and the gas split. Open Smart Heating, Reconfigure, and on the Hot water step pick the tank's own signal (zone valve or programmer channel) or leave it empty."

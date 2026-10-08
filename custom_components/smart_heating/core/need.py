@@ -46,11 +46,11 @@ def evaluate_need(
         calling = snap.temp <= target - s.hysteresis
 
     if not calling:
-        return NeedResult(Level.NONE, target, False, deficit, f"at target ({why})")
+        return NeedResult(Level.NONE, target, False, deficit, f"at target ({why})", source=level)
     if snap.temp < s.safety:
         # Below the frost/damp floor: always safety, whatever the target.
-        return NeedResult(Level.SAFETY, target, True, deficit, "below safety floor")
-    return NeedResult(level, target, True, deficit, why)
+        return NeedResult(Level.SAFETY, target, True, deficit, "below safety floor", source=level)
+    return NeedResult(level, target, True, deficit, why, source=level)
 
 
 _RANK = {Level.SAFETY: 0, Level.BASELINE: 1, Level.COMFORT: 2, Level.MANUAL: 3}

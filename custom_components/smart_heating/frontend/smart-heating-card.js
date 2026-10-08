@@ -13,11 +13,15 @@
 const STATE_LABEL = {
   approved: "Heating",
   piggyback: "Topping up",
-  deferred: "Coasting",
+  wants: "Wants heat",
+  watched: "Watched only",  // nothing heats it: shown, learned from, never heated  // approved, but no heat flowing yet (hot water first, boiler rest, protection, watching)
+  deferred: "Waiting",  // warming on its own, heat rising from below, or a small demand batched
   vetoed: "Not needed",
   idle: "Idle",
   fault: "No sensor",
 };
+
+const SHORT_RATING = { "below average": "below avg" };  // fits a tile; the tooltip keeps the full word
 
 const FLOOR_NAME = { 0: "Ground", 1: "1st", 2: "2nd", 3: "3rd" };
 
@@ -49,11 +53,13 @@ function indicators(d) {
   const out = [];
   const add = (key, cls, label) => out.push(`<span class="ind ${cls}" title="${esc(label)}" aria-label="${esc(label)}" role="img"><svg viewBox="0 0 24 24">${IND[key]}</svg></span>`);
   if (d.firing === true) add("flame", "burn", "Boiler burning");
-  else if (d.demand && d.hasBoiler) add("flame", "wait", d.monitor ? "Would call the boiler" : "Boiler called, not burning yet");
-  if (d.calling > 0 && !d.monitor) add("radiator", "heat", `Heating ${d.calling === 1 ? "1 room" : `${d.calling} rooms`}`);
-  if (d.heaterCount > 0 && !d.monitor) add("bolt", "heat", `${d.heaterCount} electric heater room${d.heaterCount === 1 ? "" : "s"} on`);
+  else if (d.monitor && d.demand && d.hasBoiler) add("flame", "wait", "Would call the boiler");
+  else if (d.called) add("flame", "wait", "Boiler called, not burning yet");
+  else if (d.demand && d.holdUntil) add("flame", "wait", `Boiler wanted, protection holds it until ${hhmm(d.holdUntil)}`);
+  if (d.radiatorCount > 0) add("radiator", "heat", `Radiators heating in ${rooms_(d.radiatorCount)}`);
+  if (d.heaterCount > 0) add("bolt", "heat", `${d.heaterCount} electric heater room${d.heaterCount === 1 ? "" : "s"} on`);
   if (d.hotWater === true) add("water", "water", "Hot water heating");
-  if (d.away) add("away", "away", "Away: frost protection only");
+  if (d.away) add("away", "away", `Away${d.awayReason ? ` (${d.awayReason})` : ""}: frost protection only`);
   if (d.night) add("moon", "night", "Night settings");
   if (d.monitor) add("eye", "watch", "Watching only: not controlling yet");
   return out.length ? `<span class="inds">${out.join("")}</span>` : "";
@@ -66,6 +72,7 @@ const SPIN = '<svg class="spin" viewBox="0 0 24 24" aria-hidden="true"><circle c
 const ICON_PERSON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="3.6"/><path d="M4.8 20.5c0-4 3.2-7 7.2-7s7.2 3 7.2 7z"/></svg>';
 const ICON_BOLT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4.5 13.5H11L10 22l8.5-11.5H12z"/></svg>';
 const ICON_WINDOW = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="1.5"/><path d="M12 3.5v17M5 12h14"/></svg>';
+const ICON_CLOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>';
 const ICON_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
 const ICON_FLAME = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.2 1.2-3.6 2.4-4.6.2 1.6 1 2.6 2.1 3C11 8.8 11.4 5.6 12 3z"/></svg>';
 
@@ -84,13 +91,17 @@ function modeBar(current) {
   </div>`;
 }
 
+const rooms_ = (n) => (n === 1 ? "1 room" : `${n} rooms`);
 const STATUS_SENTENCE = {
-  heating: (n) => `Heating ${n === 1 ? "1 room" : `${n} rooms`}`,
-  idle: () => "Not heating, nothing needs it",
+  heating: (n, d) => n ? `Heating ${rooms_(n)}`
+    : d.called && !d.firing ? "Boiler starting"
+    : d.holdUntil ? `Boiler protection until ${hhmm(d.holdUntil)}`
+    : /min run/.test(d.reason || "") ? "Boiler finishing its minimum run" : "Heating",
+  idle: (n, d) => (d.waitingRooms ? `Not heating, ${rooms_(d.waitingRooms)} waiting` : "Not heating, nothing needs it"),
   paused: () => "Paused for hot water",
   waiting: () => "Waiting for boiler rest time",
   off: () => "Heating is off",
-  away: () => "Away: alarm armed, frost protection only",
+  away: (n, d) => `Away${d.awayReason ? ` (${d.awayReason})` : ""}: frost protection only`,
   fault: () => "Room sensors unavailable",
   disabled: () => "Controller disabled",
   testing: () => "Heat test running",
@@ -110,6 +121,7 @@ class SmartHeatingCard extends HTMLElement {
     this._expanded = false;
     this._calOpen = false;
     this._winOpen = false;
+    this._aboutOpen = new Set();  // rooms whose "Room profile" is unfolded
     this._tip = null;
     this._energyOpen = false;
     this._pending = {};
@@ -181,6 +193,7 @@ class SmartHeatingCard extends HTMLElement {
           else if (s.attributes.kind === "outdoor_day_mean") house.outdoor = s;
           else if (s.attributes.kind === "calibration") house.cal = s;
           else if (s.attributes.kind === "gas_today") house.gas = s;
+          else if (s.attributes.kind === "heating_hours_today") house.hours = s;
           else if (s.attributes.kind === "gas_cost_today") house.cost = s;
           else if (s.attributes.kind === "electric_today") house.elec = s;
           else if (s.attributes.kind === "electric_cost_today") house.elecCost = s;
@@ -218,6 +231,13 @@ class SmartHeatingCard extends HTMLElement {
         hasTrv: a.has_trv,
         hasHeater: a.has_heater === true,
         heaterOn: a.heater_on === true,
+        heatingNow: a.heating_now === true,
+        radiator: a.radiator !== false,
+        callsBoiler: a.calls_boiler !== false,
+        roomState: a.room_state,  // controlled, follows_boiler, watched, not_working
+        heaterStopped: a.heater_stopped || null,
+        targetSource: a.target_source,  // which target applies: safety (frost), baseline, comfort (in use), manual
+        inUse: a.target_source === "comfort",
         kwh: num(energy?.state),
         powerW: energy?.attributes.power_now_w,
         roomCost: energy?.attributes.cost_today,
@@ -229,8 +249,6 @@ class SmartHeatingCard extends HTMLElement {
         overrideUntil: a.override_until,
         verdict: decision?.state || "idle",
         level: need.state,
-        thermo: a.temperature_entity ? (hass.states[a.temperature_entity]?.attributes.friendly_name || a.temperature_entity) : null,
-        thermoSource: a.temperature_source,
         deficit: a.deficit,
         tau: num(tau?.state),
         gain: tau?.attributes.free_heat_gain,
@@ -246,6 +264,7 @@ class SmartHeatingCard extends HTMLElement {
         pred2: num(pred?.state),
         pred8: pred?.attributes.predicted_8h,
         hoursToBase: pred?.attributes.hours_to_baseline,
+        predBase: pred?.attributes.baseline,
         reason: decision?.attributes.reason || a.reason || "",
       });
     }
@@ -262,8 +281,15 @@ class SmartHeatingCard extends HTMLElement {
       night: house.status?.attributes.night === true,
       away: house.status?.attributes.away === true,
       heaterCount: (house.status?.attributes.heater_rooms || []).length,
-      calling: new Set([...(house.status?.attributes.open_rooms || []), ...(house.status?.attributes.heater_rooms || [])]).size,
-      monitor: house.monitor?.state === "on",
+      radiatorCount: (house.status?.attributes.radiator_rooms || []).length,
+      calling: (house.status?.attributes.heating_rooms || []).length,
+      wanted: (house.status?.attributes.wanted_rooms || []).length,
+      waitingRooms: rooms.filter((r) => r.verdict === "deferred").length,
+      called: house.status?.attributes.boiler_called === true,
+      awayReason: house.status?.attributes.away_reason || null,
+      holdUntil: house.status?.attributes.boiler_hold_until || null,
+      currency: hass.config?.currency || "GBP",
+      monitor: house.status ? house.status.attributes.monitor_only === true : house.monitor?.state === "on",
       mode: house.mode?.state,
       oneCycleWait: house.status?.attributes.one_cycle_wait || null,
       modeEntity: house.mode?.entity_id,
@@ -299,6 +325,8 @@ class SmartHeatingCard extends HTMLElement {
       otherGasEntity: house.otherGas?.entity_id,
       otherGasCost: house.otherGas?.attributes.cost,
       gasHours: house.gas?.attributes.heating_hours,
+      heatHours: num(house.hours?.state),
+      heatHoursEntity: house.hours?.entity_id,
       elecHours: house.elec?.attributes.heater_hours,
       otherElec: num(house.otherElec?.state),
       otherElecEntity: house.otherElec?.entity_id,
@@ -307,8 +335,9 @@ class SmartHeatingCard extends HTMLElement {
       elecEst: house.elec ? house.elec.attributes.source !== "smart_meter" && house.elec.attributes.measured !== true : false,
       log: (house.log?.attributes.entries || []).slice(0, 15),
       houseGrade: house.retention?.attributes.grade,
+      houseSettled: house.retention?.attributes.settled !== false,
       houseScore: num(house.retention?.state),
-      outdoor: num(house.outdoor?.attributes.now) ?? num(house.outdoor?.state),
+      outdoor: num(house.outdoor?.attributes.now),
       floorNames: Object.fromEntries(rooms.filter((r) => r.floorName).map((r) => [r.floor, r.floorName])),
       floorTemps: Object.fromEntries(Object.entries(house.floors || {}).map(([f, s]) => [f, num(s.state)])),
     };
@@ -318,20 +347,25 @@ class SmartHeatingCard extends HTMLElement {
 
   _setMode(mode) {
     if (!this._data.modeEntity) return;
-    this._hass.callService("select", "select_option", { entity_id: this._data.modeEntity, option: mode });
+    this._call("select", "select_option", { entity_id: this._data.modeEntity, option: mode });
   }
 
   _call(domain, service, data) {
     this._hass.callService(domain, service, data).catch((err) => {
       this._error = err?.message || String(err);
       this._render();
+      clearTimeout(this._errTimer);
+      this._errTimer = setTimeout(() => { this._error = null; this._render(); }, 10000);
     });
   }
 
   _step(entity, current, delta) {
     if (!entity) return;
-    const base = this._pending[entity] ?? current ?? 19;
-    const v = Math.min(25, Math.max(10, Math.round((base + delta) * 2) / 2));
+    const a = this._hass.states[entity]?.attributes || {};
+    const lo = a.min ?? 10, hi = a.max ?? 25, step = a.step ?? 0.5;
+    const base = this._pending[entity] ?? current;
+    if (base == null) return;  // no value yet: don't send a made-up one
+    const v = Number(Math.min(hi, Math.max(lo, Math.round((base + Math.sign(delta) * step) / step) * step)).toFixed(2));
     this._pending[entity] = v;
     clearTimeout(this._timers[entity]);
     this._timers[entity] = setTimeout(() => {
@@ -346,9 +380,7 @@ class SmartHeatingCard extends HTMLElement {
   }
 
   _setOverride(entity, option) {
-    this._hass.callService("select", "select_option", { entity_id: entity, option });
-    this._open = null;
-    this._render();
+    this._call("select", "select_option", { entity_id: entity, option });
   }
 
 
@@ -369,9 +401,9 @@ class SmartHeatingCard extends HTMLElement {
       <div class="stepper-row">
         <span class="sp-label">${esc(label)}${this._info(key)}${sub ? `<small>${esc(sub)}</small>` : ""}</span>
         <span class="stepper ${pending ? "pending" : ""}" role="group" aria-label="${esc(label)}">
-          <button data-step="-0.5" data-entity="${entity}" data-value="${value ?? ""}" aria-label="Lower">−</button>
+          <button data-step="-1" data-entity="${entity}" data-value="${value ?? ""}" aria-label="Lower">−</button>
           <output aria-live="polite">${v == null ? "–" : Number(v).toFixed(1)}<small>°</small></output>
-          <button data-step="0.5" data-entity="${entity}" data-value="${value ?? ""}" aria-label="Raise">+</button>
+          <button data-step="1" data-entity="${entity}" data-value="${value ?? ""}" aria-label="Raise">+</button>
         </span>
       </div>
       ${this._tipBox(key, tip)}`;
@@ -397,8 +429,8 @@ class SmartHeatingCard extends HTMLElement {
   _winBadge(d) {
     if (!d.win) return "";
     const open = d.win.action === "open";
-    const label = open ? `Open windows${d.win.advice === "dry" && d.win.minutes ? ` ${d.win.minutes} min` : ""}` : "Close windows";
-    return `<button class="badge win ${open ? "open" : "close"}" data-win aria-expanded="${this._winOpen}" title="${esc(d.win.reason || "")}">${ICON_WINDOW}${label}</button>`;
+    const label = open ? `Open${d.win.advice === "dry" && d.win.minutes ? ` ${d.win.minutes}min` : ""}` : "Close";  // short: fits a phone
+    return `<button class="badge win ${open ? "open" : "close"}" data-win aria-expanded="${this._winOpen}" aria-label="${open ? "Open windows" : "Close windows"}" title="${esc(d.win.reason || "")}">${ICON_WINDOW}${label}</button>`;
   }
 
   _winBox(d) {
@@ -448,14 +480,16 @@ class SmartHeatingCard extends HTMLElement {
       </div>${this._tipBox(key, tip)}`;
     const errNeed = c.uncertainty_needed_pct ?? 25;
     const steady = c.uncertainty_pct == null
-      ? row("steady", "Steady result", c.cooling_days ?? 0, c.cooling_days_needed ?? 4, " days",
-          "Tested by refitting with one group of days left out at a time: the answer must barely move. Needs cooling data from 4 different days first.")
+      ? row("steady", "Steady result", c.cooling_days ?? 0, c.cooling_days_needed, " days",
+          `Tested by refitting with one group of days left out at a time: the answer must barely move. Needs cooling data from ${c.cooling_days_needed} different days first.`)
       : row("steady", "Steady result", Math.min(errNeed, (errNeed * errNeed) / Math.max(c.uncertainty_pct, 1)), errNeed, "",
           `Tested by refitting with one group of days left out at a time: the answer must barely move. Needs ±${errNeed}% or better. Times with a shower, cooking or sun are left out, so this can take a week or two.`,
           `${c.uncertainty_pct > 100 ? "over ±100%" : `±${c.uncertainty_pct}%`} (needs ±${errNeed}%)`);
     const eta = c.eta_hours ? (c.eta_hours > 36 ? `about ${Math.round(c.eta_hours / 24 * 2) / 2} days left` : `about ${c.eta_hours} h left`) : "almost done";
+    const rise = c.heat_test_rise ?? 1, cap = c.heat_test_cap ?? 21.5, maxMin = c.heat_test_max_min ?? 135;
+    const night = c.night_cooling_hours != null ? `Each night gives up to ${fmtN(c.night_cooling_hours)} h of cooling data.` : "";
     const test = d.heatTest != null
-      ? `<div class="speed"><p>${SPIN}<b>Heat test running</b>, ${fmtMin(d.heatTest)} left. Rooms that need data are heating gently; each stops at 1° warmer, never above 21.5°.</p>
+      ? `<div class="speed"><p>${SPIN}<b>Heat test running</b>, ${fmtMin(d.heatTest)} left. Rooms that need data are heating gently; each stops at ${fmtN(rise)}° warmer, never above ${fmtN(cap)}°.</p>
          <button data-test="stop">Stop test</button></div>`
       : c.can_heat_test && c.heating_hours_left > 0 ? `
         <div class="speed">
@@ -466,20 +500,21 @@ class SmartHeatingCard extends HTMLElement {
               <button data-test="start">${ICON_FLAME}Run heat test</button>
               <button class="link" data-test="force">Run anyway</button>` : `
               <button class="primary" data-test="start">${ICON_FLAME}Run heat test</button>`}
-              <span>Gentle: only rooms that still need data, each warmed by about 1° (never above 21.5°), usually under 2 h. Then the house cools. If anything else switches the heating, the test stops.</span></li>
-            <li><span>Leave the heating off overnight. Each night gives up to 10 h of cooling data.</span></li>
+              <span>Gentle: only rooms that still need data, each warmed by about ${fmtN(rise)}° (never above ${fmtN(cap)}°), at most ${fmtDur(maxMin)}. Then the house cools. If anything else switches the heating, the test stops.</span></li>
+            <li><span>Leave the heating off overnight. ${night}</span></li>
           </ol>
         </div>`
-      : `<div class="speed"><p><b>Speed it up</b>: leave the heating off overnight. Each night gives up to 10 h of cooling data.</p></div>`;
+      : `<div class="speed"><p><b>Speed it up</b>: leave the heating off overnight. ${night}</p></div>`;
     if (d.heatTest != null && !this._calOpen) return `<div class="calpanel">${test}</div>`;
+    if (c.cooling_hours_needed == null) return `<div class="calpanel">${test}</div>`;  // nothing to learn from: no rows to show
     return `
       <div class="calpanel">
-        <p class="lead">Learning how your house holds heat: ${c.rooms_done ?? 0} of ${c.rooms_needed ?? "?"} rooms ready, ${eta}.</p>
-        ${row("cool", "Cooling data", c.cooling_hours ?? 0, c.cooling_hours_needed ?? 24, " h",
-          "Counted while the boiler has been off for at least 1 hour. Nights with the heating off fill this fastest.")}
-        ${row("range", "Temperature range", c.variety_c ?? 0, c.variety_needed_c ?? 2, "°",
-          "The gap between inside and outside needs to vary by 2°. A warm-up followed by a cool-down does it.")}
-        ${row("heat", "Heating data", c.heating_hours ?? 0, c.heating_hours_needed ?? 2, " h",
+        <p class="lead">Learning how your house holds heat: ${c.rooms_done} of ${c.rooms_needed} rooms ready, ${eta}.</p>
+        ${row("cool", "Cooling data", c.cooling_hours, c.cooling_hours_needed, " h",
+          `Counted while the radiators have been off for at least ${fmtDur(c.cooling_after_min ?? 60)}. Nights with the heating off fill this fastest.`)}
+        ${row("range", "Temperature range", c.variety_c, c.variety_needed_c, "°",
+          `The gap between inside and outside needs to vary by ${fmtN(c.variety_needed_c)}°. A warm-up followed by a cool-down does it.`)}
+        ${row("heat", "Heating data", c.heating_hours, c.heating_hours_needed, " h",
           "Counted while the boiler runs with the room's radiator open. The heat test fills this in one go.")}
         ${steady}
         <p class="now">Now: ${esc(d.calPhase || "starting")}</p>
@@ -503,8 +538,10 @@ class SmartHeatingCard extends HTMLElement {
     }
 
     const floors = [...new Set(d.rooms.map((r) => r.floor))].sort((a, b) => b - a);
-    let statusText = (STATUS_SENTENCE[d.status] || (() => d.status || ""))(d.calling);
-    if (d.monitor && d.heatTest == null && d.status === "heating") statusText = `Would heat ${d.calling === 1 ? "1 room" : `${d.calling} rooms`}`;
+    let statusText = (STATUS_SENTENCE[d.status] || (() => d.status || ""))(d.calling, d);
+    if (d.monitor && d.heatTest == null && d.status === "heating") {
+      statusText = d.wanted ? `Would heat ${rooms_(d.wanted)}` : "Would finish the boiler's minimum run";
+    }
     if (this._config.layout !== "full") {
       this._renderCompact(d, floors, statusText);
       return;
@@ -539,8 +576,8 @@ class SmartHeatingCard extends HTMLElement {
         <footer class="${this._config.layout === "full" ? "" : "slim"}">
           <dl>
             ${d.houseTemp != null ? `<div><dt>House</dt><dd>${d.houseTemp.toFixed(1)}°</dd></div>` : ""}
-            ${d.outdoor != null ? `<div><dt>Outdoor today</dt><dd>${d.outdoor.toFixed(1)}°</dd></div>` : ""}
-            ${energySummary(d, this._config.layout === "full", this._energyOpen)}
+            ${d.outdoor != null ? `<div><dt>Outside now</dt><dd>${d.outdoor.toFixed(1)}°</dd></div>` : ""}
+            ${energySummary(d, this._energyOpen)}
           </dl>
           <p>${esc(d.reason || "")}</p>
           <button class="logbtn" data-log aria-expanded="${this._showLog}">${this._showLog ? "Hide log" : "Show log"}</button>
@@ -570,7 +607,7 @@ class SmartHeatingCard extends HTMLElement {
     const up = [...floors].sort((a, b) => a - b);
     const floorPills = up.length < 2 ? "" : up.map((f) => {
       const rooms = d.rooms.filter((r) => r.floor === f);
-      const heating = rooms.some((r) => r.verdict === "approved" || r.verdict === "piggyback");
+      const heating = rooms.some((r) => r.heatingNow);
       const t = d.floorTemps[f];
       return `<span class="fp ${heating ? "on" : ""}">${heating ? `<i aria-label="heating"></i>` : ""}${this._floorLabel(f)}${t != null ? ` <b>${t.toFixed(1)}°</b>` : ""}</span>`;
     }).join("");
@@ -605,8 +642,8 @@ class SmartHeatingCard extends HTMLElement {
           ${compactHouse(floors.map((f) => this._compactFloor(f, d.rooms.filter((r) => r.floor === f))).join(""))}
           <footer class="slim">
             <dl>
-              ${energySummary(d, false, this._energyOpen)}
-              ${d.houseGrade ? `<div><dt>Insulation</dt><dd><span class="grade g-${d.houseGrade}">${d.houseGrade}</span> ${d.houseScore}</dd></div>` : ""}
+              ${energySummary(d, this._energyOpen)}
+              ${d.houseGrade ? `<div ${d.houseSettled ? "" : 'class="unsettled" title="Still settling: it firms up as rooms are learned"'}><dt>Insulation</dt><dd><span class="grade g-${d.houseGrade}">${d.houseGrade}</span> ${d.houseScore}</dd></div>` : ""}
             </dl>
             <button class="logbtn" data-log aria-expanded="${this._showLog}">${this._showLog ? "Hide log" : "Log"}</button>
           </footer>
@@ -636,6 +673,12 @@ class SmartHeatingCard extends HTMLElement {
     root.querySelectorAll("[data-step]").forEach((b) => b.addEventListener("click", (e) => {
       e.stopPropagation();
       this._step(b.dataset.entity, b.dataset.value === "" ? null : parseFloat(b.dataset.value), parseFloat(b.dataset.step));
+    }));
+    root.querySelectorAll("[data-about]").forEach((b) => b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const name = b.dataset.about;
+      if (!this._aboutOpen.delete(name)) this._aboutOpen.add(name);
+      this._render();
     }));
     root.querySelector("[data-win]")?.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -705,7 +748,10 @@ class SmartHeatingCard extends HTMLElement {
   }
 
   _state(r) {
-    return r.override === "off" ? "off" : r.verdict;
+    if (r.roomState === "watched") return "watched";
+    if (r.override === "off") return "off";
+    if (r.heatingNow) return r.verdict === "piggyback" ? "piggyback" : "approved";  // incl. an always-open radiator
+    return r.verdict === "approved" || r.verdict === "piggyback" ? "wants" : r.verdict;
   }
 
   _compactFloor(floor, rooms) {
@@ -717,18 +763,18 @@ class SmartHeatingCard extends HTMLElement {
         <div class="chips">
           ${rooms.map((r) => this._chip(r)).join("")}
         </div>
-        ${open ? `<div class="cdetail">${this._actions(open, true)}</div>` : ""}
+        ${open ? `<div class="cdetail">${this._actions(open)}</div>` : ""}
       </div>`;
   }
 
   _chip(r) {
     const state = this._state(r);
-    const label = r.override === "off" ? "off by you" : (STATE_LABEL[r.verdict] || r.verdict).toLowerCase();
+    const label = r.override === "off" ? "off by you" : (STATE_LABEL[state] || state).toLowerCase();
     return `
       <button class="chip v-${state} ${r.hasTrv || r.hasHeater ? "" : "dumb"}" data-room="${esc(r.name)}"
         aria-expanded="${this._open === r.name}" aria-label="${esc(r.name)}, ${r.temp == null ? "no reading" : r.temp.toFixed(1) + " degrees"}, ${esc(label)}"
         title="${esc(r.name)}: ${esc(r.reason)}">
-        ${r.occupied ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}
+        ${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}
         ${r.heaterOn ? `<span class="bolt" aria-label="heater on">${ICON_BOLT}</span>` : ""}
         <span class="cname">${esc(r.name)}</span>
         <span class="ctemp">${r.temp == null ? "–" : r.temp.toFixed(1)}</span>
@@ -736,16 +782,16 @@ class SmartHeatingCard extends HTMLElement {
   }
 
   _room(r) {
-    const state = r.override === "off" ? "off" : r.verdict;
+    const state = this._state(r);
     const label = r.override === "off" ? "Off by you"
-      : r.override === "heat" && r.verdict !== "approved" ? "Heat requested"
-      : STATE_LABEL[r.verdict] || r.verdict;
+      : r.override === "heat" && state !== "approved" ? "Heat requested"
+      : STATE_LABEL[state] || state;
     const trend = r.trend == null ? "" : r.trend > 0.15 ? " ↑" : r.trend < -0.15 ? " ↓" : "";
     return `
       <button class="room v-${state} ${r.hasTrv || r.hasHeater ? "" : "dumb"}" data-room="${esc(r.name)}"
         aria-expanded="${this._open === r.name}"
         title="${esc(r.reason)}">
-        <span class="name">${esc(r.name)}${r.occupied ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}</span>
+        <span class="name">${esc(r.name)}${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}</span>
         <span class="temp">${r.temp == null ? "–" : `${r.temp.toFixed(1)}°`}<small>${trend}</small></span>
         <span class="meta">${esc(label)}${r.target != null ? `<span class="target">to ${Number(r.target).toFixed(1)}°</span>` : ""}</span>
       </button>`;
@@ -758,59 +804,135 @@ class SmartHeatingCard extends HTMLElement {
       <li><time>${t(e.time)}</time><span>${e.room ? `<b>${esc(e.room)}</b> ` : ""}${esc(e.message)}</span></li>`).join("")}</ol>`;
   }
 
-  _details(r) {
-    const f = (v, unit = "°", dp = 1) => (v == null || isNaN(v) ? "–" : `${Number(v).toFixed(dp)}${unit}`);
-    const rows = [
-      ["Thermometer", r.thermo ? `${r.thermo}${r.thermoSource === "TRV" ? " (TRV)" : ""}` : "none"],
-      ...(r.hasHeater ? [
-        ["Heater", r.heaterOn ? `on${r.powerW ? `, ${Math.round(r.powerW)} W` : ""}` : "off"],
-        ["Energy today", r.kwh == null ? "–" : `${r.kwh.toFixed(2)} kWh${r.roomCost != null ? `, £${Number(r.roomCost).toFixed(2)}` : ""}`],
-      ] : []),
-      ["Need", r.level],
-      ["Target", f(r.target)],
-      ["Short by", r.deficit != null && r.deficit > 0 ? f(r.deficit) : "–"],
-      ["Trend", r.trend == null ? "–" : `${r.trend > 0 ? "+" : ""}${Number(r.trend).toFixed(2)}°/h`],
-      ...(r.pred2 != null ? [
-        ["In 2 h", f(r.pred2)],
-        ["In 8 h", f(r.pred8)],
-        ["Reaches baseline", r.hoursToBase == null ? "not soon" : `in ${Number(r.hoursToBase).toFixed(1)} h`],
-      ] : []),
-      ...(r.grade ? [["Insulation", (() => {
-        const settling = r.settled === false && (r.calibration ?? 0) < 100 ? ", settling" : "";
-        return r.settled === false && r.gradeRange
-          ? `${r.gradeRange} (${Math.round(r.tauLow)}-${Math.round(r.tauHigh)} h)${settling}`
-          : `${r.grade} ${r.rating} (${Math.round(r.tau)} h)${settling}`;
-      })()]] : []),
-      ...(r.gain != null && r.tau != null ? [["Free heat", f(r.gain)]] : []),
-      ...(r.warmup != null ? [["Warm-up", `${Number(r.warmup).toFixed(1)}°/h`]] : []),
-      ...(!r.grade || r.warmup == null ? [["Learning", `${r.calibration ?? 0}%`]] : []),
-    ];
-    return `<dl class="details">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>`;
-  }
-
   _roomStepper(r) {
     if (!r.setpointEntity) return "";
     const d = this._data;
     const key = `room-${r.name}`;
     const vs = r.vsHouse == null || Math.abs(r.vsHouse) < 0.05 ? "same as house" : `${r.vsHouse > 0 ? "+" : ""}${Number(r.vsHouse).toFixed(1)}° vs house`;
-    const tip = `${r.name} heats to this while in use (presence, lights, schedule or Heat now). Empty, it stays at ${fmt(d.baseDay)}. `
+    const tip = `${r.name} heats to this while in use (presence, lights, schedule or Heat now). Empty, it stays at ${fmt(d.baseDay)} by day and ${fmt(d.baseNight)} at night. `
       + (r.hasHeater ? "Its electric heater switches on its own, so it can differ from other rooms."
         : r.hasTrv ? "Its TRV opens and closes on its own, so it can differ from other rooms."
         : "No TRV here: it can ask for heat, but its radiator can't be shut, so it also warms with the rest of the house.");
     return this._stepper(r.setpointEntity, r.setpoint, "Target when in use", key, tip, vs);
   }
 
-  _actions(r, compact = false) {
-    if (!r.overrideEntity) return compact ? `<div class="actions"><p><b>${esc(r.name)}</b>: ${esc(r.reason)}</p>${this._roomStepper(r)}${this._details(r)}</div>` : "";
-    const opt = (key, text) => `
-      <button data-ov="${key}" data-entity="${r.overrideEntity}" aria-pressed="${r.override === key}">${text}</button>`;
-    const until = r.overrideUntil ? new Date(r.overrideUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
+  /* ---------- room panel: state and scale on top, target and override, the rest folded away ---------- */
+
+  _panelState(r) {
+    if (r.roomState === "not_working") return ["No temperature", "off"];
+    if (r.roomState === "watched") return ["Watched only", "idle"];
+    if (r.override === "off") return ["Off by you", "off"];
+    if (r.heaterStopped && !r.heatingNow) return ["Heater stopped", "wait"];
+    const st = this._state(r);
+    if (st === "approved" || st === "piggyback") return [STATE_LABEL[st], "heat"];
+    if (r.override === "heat") return ["Heat requested", "wait"];
+    if (st === "wants" || st === "deferred") return [STATE_LABEL[st], "wait"];
+    if (st === "fault") return [STATE_LABEL.fault, "off"];
+    if (r.temp != null && r.target != null && r.temp >= r.target) return ["Warm enough", "ok"];
+    return [STATE_LABEL[st] || "Idle", "idle"];
+  }
+
+  // Why the room has the target it has: which temperature applies now, and what the others are.
+  _why(r) {
+    const d = this._data, use = fmt(r.setpoint ?? r.comfort);
+    const until = r.overrideUntil ? ` until ${hhmm(r.overrideUntil)}` : "";
+    if (r.override === "off") return { key: "frost", tag: "Turned off", text: `It only keeps above ${fmt(d.safety)} (frost protection).` };
+    if (r.targetSource === "manual") return { key: "use", tag: "Heat now", text: `You asked for heat: it holds ${use}${until}.` };
+    if (r.targetSource === "safety") {
+      const tag = d.mode === "off" ? "Heating off" : d.away ? "Away" : "Frost protection";
+      return { key: "frost", tag, text: `Only frost protection applies: it keeps above ${fmt(d.safety)}.` };
+    }
+    if (r.targetSource == null) return { key: "", tag: "No temperature", text: "It has no temperature reading, so it is left alone." };
+    if (r.inUse) return { key: "use", tag: "In use", text: `Empty: ${fmt(d.baseDay)} by day, ${fmt(d.baseNight)} at night.` };
+    return { key: d.night ? "night" : "day", tag: d.night ? "Empty, night" : "Empty", text: `In use: ${use}.` };
+  }
+
+  _gap(r) {
+    if (r.temp == null || r.target == null) return "";
+    const g = r.target - r.temp;
+    if (g > 0.05) {
+      const rate = r.heatingNow ? r.warmup || (r.trend > 0.05 ? r.trend : null) : r.trend > 0.05 ? r.trend : null;  // only when it is warming
+      const m = rate ? Math.max(5, Math.round((g / rate) * 12) * 5) : null;
+      return `${g.toFixed(1)}° to go${m ? `, ~${fmtDur(m)}` : ""}`;
+    }
+    return g < -0.05 ? `${(-g).toFixed(1)}° above` : "at target";
+  }
+
+  // Frost, night, empty and in-use temperatures on one line; the one that applies now is lit.
+  _scale(r, why) {
+    const d = this._data;
+    const marks = [["frost", "Frost", d.safety], ["night", "Night", d.baseNight], ["day", "Empty", d.baseDay], ["use", "In use", r.setpoint ?? r.comfort]]
+      .sort((a, b) => (b[0] === why.key) - (a[0] === why.key))  // equal temperatures: the one that applies stays
+      .filter((m, i, all) => m[2] != null && all.findIndex((n) => n[2] === m[2]) === i);
+    if (marks.length < 2) return "";
+    const vals = [...marks.map((m) => m[2]), r.temp].filter((v) => v != null);
+    const lo = Math.min(...vals) - 0.8, hi = Math.max(...vals) + 0.8;
+    const x = (v) => (16 + ((v - lo) / (hi - lo)) * 268).toFixed(1);
+    const deg = (v) => `${Number(v).toFixed(Number(v) % 1 ? 1 : 0)}°`;
+    const ticks = marks.map(([k, label, v]) => `<g class="${k === why.key ? "on" : ""}"><line x1="${x(v)}" x2="${x(v)}" y1="26" y2="38"/>
+      <text x="${x(v)}" y="51" text-anchor="middle">${label}</text><text class="v" x="${x(v)}" y="62" text-anchor="middle">${deg(v)}</text></g>`).join("");
+    const now = r.temp == null ? "" : `<g class="now"><circle cx="${x(r.temp)}" cy="32" r="5"/><text x="${x(r.temp)}" y="16" text-anchor="middle">${r.temp.toFixed(1)}°</text></g>`;
+    return `<svg class="rp-scale" viewBox="0 0 300 66" role="img" aria-label="${esc(r.name)} against its frost, night, empty and in-use temperatures">
+      <line class="track" x1="10" x2="290" y1="32" y2="32"/>${ticks}${now}</svg>`;
+  }
+
+  _about(r, why) {
+    const f = (v, unit = "°") => (v == null || isNaN(v) ? "–" : `${Number(v).toFixed(1)}${unit}`);
+    const tile = (k, v, span = 1, tip = "") =>
+      `<div class="rp-tile${span > 1 ? ` s${span}` : ""}"${tip ? ` title="${esc(tip)}"` : ""}><span>${k}</span><b>${v}</b></div>`;
+    const lose = (h) => `With the heating off it loses about two thirds of its warmth over outside in ${h} h.`;
+    const settling = r.settled === false && (r.calibration ?? 0) < 100;
+    const ins = !r.grade ? null : settling
+      ? { g: r.gradeRange || r.grade, t: "settling",
+          tip: `${lose(r.gradeRange ? `${Math.round(r.tauLow)} to ${Math.round(r.tauHigh)}` : Math.round(r.tau))} Still settling.` }
+      : { g: r.settled === false && r.gradeRange ? r.gradeRange : r.grade, t: SHORT_RATING[r.rating] || r.rating || "", tip: `${r.rating}. ${lose(Math.round(r.tau))}` };
+    const base = f(r.predBase ?? this._data.baseDay);
+    const forecast = r.pred2 == null ? "" : `<div class="rp-fc"><span>Prediction without heating</span>
+      <p><b>${f(r.pred2)}</b> in 2 h · <b>${f(r.pred8)}</b> in 8 h · ${r.hoursToBase == null ? `stays above <b>${base}</b>` : r.hoursToBase === 0 ? `already at <b>${base}</b>` : `down to <b>${base}</b> in ${f(r.hoursToBase, " h")}`}</p></div>`;
+    const tiles = [
+      ins ? tile("Insulation", `<i class="grade g-${esc(String(ins.g).charAt(0))}">${esc(ins.g)}</i>${esc(ins.t)}`, 1, ins.tip) : "",
+      r.warmup != null ? tile("Warm-up", f(r.warmup, "°/h"), 1, "How fast it warms while its radiator or heater is on.") : "",
+      r.gain != null && r.tau != null ? tile("Free heat", `${r.gain >= 0 ? "+" : ""}${f(r.gain)}`, 1,
+        "How much warmer than outside it settles with no heating at all: people, sun, cooking and the rooms around it.") : "",
+      (!r.grade || r.warmup == null) && r.roomState !== "watched" && r.roomState !== "not_working" ? tile("Learning", `${r.calibration ?? 0}%`) : "",
+      r.radiator && !r.hasTrv ? tile("Radiator", "No TRV, always open", 2) : "",
+      r.radiator && !r.callsBoiler ? tile("Boiler", "Never starts it", 1, "This room heats when another room calls. Frost protection and Heat now can still start the boiler.") : "",
+      r.hasHeater ? tile("Heater", r.heaterOn ? `on${r.powerW ? `, ${Math.round(r.powerW)} W` : ""}` : r.heaterStopped ? "kept off" : "off", 1,
+        r.heaterStopped ? `Kept off: ${r.heaterStopped}` : "") : "",
+      r.hasHeater && r.kwh != null ? tile("Today", `${r.kwh.toFixed(2)} kWh${r.roomCost != null ? ` · ${money(r.roomCost, this._data.currency)}` : ""}`, 2) : "",
+    ].join("");
+    const [tag, text] = r.roomState === "not_working" ? ["No temperature", "check its thermometer (battery, range)"]
+      : r.roomState === "watched" ? ["Watched only", "nothing here can heat it"]
+      : r.heaterStopped && !r.heatingNow ? ["Heater kept off", r.heaterStopped]
+      : [why.tag, `target ${f(r.target)}, ${this._gap(r)}`];
+    return `<div class="rp-fc sum" title="${esc(`${tag}: ${text}. ${why.text}`)}"><span>Summary</span><p><b>${esc(tag)}:</b> ${esc(text)}</p></div>
+      ${forecast}<div class="rp-tiles">${tiles}</div>`;
+  }
+
+  _actions(r) {
+    const [label, cls] = this._panelState(r);
+    const why = this._why(r);
+    const arrow = r.trend > 0.15 ? "↑" : r.trend < -0.15 ? "↓" : "";
+    const until = r.overrideUntil ? hhmm(r.overrideUntil) : null;
+    const opt = (key, text) => `<button data-ov="${key}" data-entity="${r.overrideEntity}" aria-pressed="${r.override === key}">${text}</button>`;
+    const open = this._aboutOpen.has(r.name);
+    const ins = r.grade ? (r.settled === false && r.gradeRange ? r.gradeRange : r.grade) : null;
+    const settling = r.settled === false && (r.calibration ?? 0) < 100;
+    const summary = [ins ? `${ins} insulation${settling ? " (settling)" : ""}` : null, r.warmup != null ? `warms ${Number(r.warmup).toFixed(1)}°/h` : null,
+      r.hasHeater ? `heater ${r.heaterOn ? "on" : "off"}` : null].filter(Boolean).join(" · ");
     return `
-      <div class="actions" role="group" aria-label="${esc(r.name)} override">
-        <p>${compact ? `<b>${esc(r.name)}</b> ${esc(STATE_LABEL[r.verdict] || r.verdict).toLowerCase()}: ` : ""}${esc(r.reason)}${until ? `. Override until ${until}` : ""}</p>
-        ${this._roomStepper(r)}
-        ${this._details(r)}
-        <div class="buttons">${opt("heat", "Heat now")}${opt("off", "Turn off")}${opt("auto", "Back to auto")}</div>
+      <div class="rp" role="group" aria-label="${esc(r.name)}">
+        <div class="rp-head">
+          <div><span class="rp-name">${esc(r.name)}</span><b class="rp-temp">${r.temp == null ? "–" : `${r.temp.toFixed(1)}°`}</b>
+            <span class="rp-trend">${arrow} ${r.trend == null ? "" : `${r.trend > 0 ? "+" : ""}${Number(r.trend).toFixed(1)}°/h`}</span></div>
+          <span class="pill ${cls}" title="${esc(r.heaterStopped ? `Heater kept off: ${r.heaterStopped}` : r.reason)}">${esc(label)}${until ? ` until ${until}` : ""}</span>
+        </div>
+        ${r.temp == null || r.roomState === "watched" ? "" : this._scale(r, why)}
+        ${r.roomState === "watched" ? "" : this._roomStepper(r)}
+        ${r.overrideEntity && r.roomState !== "watched" ? `<div class="rp-seg" role="group" aria-label="${esc(r.name)} override">${opt("auto", "Auto")}${opt("heat", "Heat now")}${opt("off", "Off")}</div>` : ""}
+        <button class="rp-toggle" data-about="${esc(r.name)}" aria-expanded="${open}">
+          <span class="chev2 ${open ? "up" : ""}">${CHEV}</span>Room profile<small>${esc(summary)}</small></button>
+        ${open ? `<div class="rp-more">${this._about(r, why)}</div>` : ""}
       </div>`;
   }
 }
@@ -828,6 +950,18 @@ function tempHue(t) {
   return HUE_STOPS[HUE_STOPS.length - 1][1];
 }
 
+function money(v, currency) {
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "GBP" }).format(v);
+  } catch (e) {
+    return `${Number(v).toFixed(2)} ${currency || ""}`.trim();
+  }
+}
+
+function hhmm(iso) {
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function fmt(v) {
   return v == null ? "–" : `${Number(v).toFixed(1)}°`;
 }
@@ -835,6 +969,11 @@ function fmt(v) {
 function fmtN(v) {
   const n = Number(v);
   return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+// Minutes for a sentence: "1 h", "2 h 15", "45 min".
+function fmtDur(m) {
+  return m >= 60 && m % 60 === 0 ? `${m / 60} h` : fmtMin(m);
 }
 
 function fmtMin(m) {
@@ -862,19 +1001,22 @@ function compactHouse(inner) {
 
 // Energy in the footer: only what the heating used, with an (i) that opens where all the energy went.
 const EIC_GAS = `<span class="eic flame">${ICON_FLAME}</span>`, EIC_ELEC = `<span class="eic">${ICON_BOLT}</span>`;
+const EIC_CLOCK = `<span class="eic">${ICON_CLOCK}</span>`;
 
-function energySummary(d, label, open) {
+// Today 🕐 1.2 h 🔥 3.8 kWh £0.35 (i). Hours and cost only once there are some.
+function energySummary(d, open) {
   const hasGas = d.gas != null, hasElec = d.elec != null;
   if (!hasGas && !hasElec) return "";
-  const kwh = (v) => `${v.toFixed(1)} kWh`;
+  const kwh = (v) => `${v > 0 ? v.toFixed(1) : "0"} kWh`;
   const proj = d.elecProjected != null ? `. About ${Number(d.elecProjected).toFixed(1)} kWh by midnight at this rate` : "";
   const info = `<button class="ibtn" data-energy aria-expanded="${open}" aria-label="Where the energy went" title="Where the energy went">${ICON_INFO}</button>`;
   const fig = (entity, icon, title, value) => `<span class="efuel">${icon}<span ${moreInfo(entity, title)}>${value}</span></span>`;
   const cost = hasGas && hasElec ? (d.cost || 0) + (d.elecCost || 0) : hasGas ? d.cost : d.elecCost;
-  return `<div class="efig">${label ? "<dt>Heating today</dt>" : ""}<dd>`
+  return `<div class="efig"><dt>Today</dt><dd>`
+    + (d.heatHours > 0 ? fig(d.heatHoursEntity, EIC_CLOCK, "Heating hours today", `${d.heatHours.toFixed(1)} h`) : "")
     + (hasGas ? fig(d.gasEntity, EIC_GAS, `Heating gas today${d.gasMeasured ? "" : " (estimated)"}`, kwh(d.gas)) : "")
     + (hasElec ? fig(d.elecEntity, EIC_ELEC, `Heating electricity today${d.elecEst ? " (estimated)" : ""}${proj}`, kwh(d.elec)) : "")
-    + (cost != null ? `<span class="esep">·</span><span class="ecost" title="Heating cost today">£${cost.toFixed(2)}</span>` : "")
+    + (cost > 0 ? `<span class="ecost" title="Heating cost today">${money(cost, d.currency)}</span>` : "")
     + `${info}</dd></div>`;
 }
 
@@ -882,7 +1024,7 @@ function energySummary(d, label, open) {
 function energyBreakdown(d) {
   const hrs = (v) => (v == null ? "" : ` <small>${Number(v).toFixed(1)} h</small>`);
   const kwh = (v) => (v == null ? "–" : `${Number(v).toFixed(1)} kWh`);
-  const gbp = (v) => (v == null ? "–" : `£${Number(v).toFixed(2)}`);
+  const gbp = (v) => (v == null ? "–" : money(v, d.currency));
   const row = (label, hours, k, c, entity, muted = false) =>
     `<li class="${muted ? "muted" : ""}" ${moreInfo(entity)}><span>${label}${hrs(hours)}</span><span class="n">${kwh(k)}</span><span class="n">${gbp(c)}</span></li>`;
   const sub = (label, k, c) => `<li class="esub"><span>${label}</span><span class="n">${kwh(k)}</span><span class="n">${gbp(c)}</span></li>`;
@@ -897,11 +1039,12 @@ function energyBreakdown(d) {
   if (d.elec != null) {
     parts.push(`<p class="ehead">${EIC_ELEC}Electricity${d.elecEst ? " (estimated)" : ""}</p><ul>`
       + row("Heaters", d.elecHours, d.elec, d.elecCost, d.elecEntity)
+      + (d.otherElec != null ? row("Everything else", null, d.otherElec, null, d.otherElecEntity, true) : "")
       + sub("Electricity for heating", d.elec, d.elecCost) + "</ul>");
   }
   // One fuel: its subtotal is already the heating cost. Hybrid: add them up.
   const total = d.gas != null && d.elec != null
-    ? `<p class="etotal"><span>Heating cost today</span><b>£${((d.cost || 0) + (d.elecCost || 0)).toFixed(2)}</b></p>` : "";
+    ? `<p class="etotal"><span>Heating cost today</span><b>${money((d.cost || 0) + (d.elecCost || 0), d.currency)}</b></p>` : "";
   return `<div class="ebreak" role="region" aria-label="Where the energy went">${parts.join("")}${total}</div>`;
 }
 
@@ -972,6 +1115,7 @@ const STYLE = `<style>
   .room.v-approved .meta { color: var(--sh-heat); }
   .room.v-piggyback { border-left-color: var(--sh-top); }
   .room.v-deferred { border-left-color: var(--sh-coast); }
+  .room.v-wants { border-left-color: var(--sh-heat); border-left-style: dotted; }
   .room.v-off { border-left-color: var(--sh-off); opacity: .7; }
   .room.v-fault { border-left-color: var(--sh-fault); }
   .room.v-fault .meta { color: var(--sh-fault); }
@@ -980,10 +1124,6 @@ const STYLE = `<style>
 
   .actions { grid-column: 1 / -1; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--sh-line); background: rgba(255, 255, 255, .1); }  /* the open room stands out */
   .actions p { margin: 0 0 8px; font-size: .8125rem; color: var(--sh-muted); }
-  .actions .buttons { display: flex; flex-wrap: wrap; gap: 6px; }
-  .details { margin: 0 0 10px; display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px 12px; }
-  .details dt { font-size: .6875rem; color: var(--sh-muted); }
-  .details dd { margin: 0; font-size: .875rem; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
   .logbtn { all: unset; cursor: pointer; font-size: .75rem; color: var(--primary-color); padding: 2px 0; }
   .logbtn:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
   .log { list-style: none; margin: 8px 0 0; padding: 8px 0 0; border-top: 1px solid var(--sh-line); max-height: 260px; overflow-y: auto; }
@@ -991,8 +1131,6 @@ const STYLE = `<style>
   .log time { color: var(--sh-muted); font-variant-numeric: tabular-nums; }
   .log b { font-weight: 500; }
   .log .muted { color: var(--sh-muted); font-size: .8125rem; margin: 0; }
-  .actions .buttons button { all: unset; cursor: pointer; padding: 6px 12px; border-radius: 14px; border: 1px solid var(--sh-line); font-size: .8125rem; color: var(--primary-text-color); }
-  .actions .buttons button[aria-pressed="true"] { border-color: var(--primary-text-color); }
 
   footer { margin-top: 12px; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
   footer dl { margin: 0; display: flex; flex-wrap: wrap; gap: 8px 20px; }
@@ -1042,6 +1180,9 @@ const STYLE = `<style>
   .chip.v-approved .ctemp, .chip.v-approved .cname { color: var(--sh-heat); }
   .chip.v-piggyback { border-color: var(--sh-top); }
   .chip.v-deferred { border-color: var(--sh-coast); border-style: dotted; }
+  .chip.v-wants { border-color: var(--sh-heat); border-style: dotted; }
+  .chip.v-watched, .room.v-watched { opacity: .6; }
+  .chip.v-wants .cname { color: var(--sh-heat); }
   .chip.v-off { opacity: .55; }
   .chip.v-fault .ctemp { color: var(--sh-fault); }
   .chip.dumb { background: transparent; border: 1px dashed var(--sh-line); }
@@ -1055,22 +1196,67 @@ const STYLE = `<style>
   footer.slim dd { display: inline; font-size: .875rem; }
   footer.slim .efig dd { font-size: .8125rem; }
   .efuel { white-space: nowrap; }
-  .efuel + .efuel { margin-left: 10px; }
-  .eic { --s: 15px; display: inline-flex; width: var(--s); height: var(--s); margin-right: 3px; vertical-align: calc(.36em - var(--s) / 2); color: var(--sh-muted); }
+  .efuel + .efuel { margin-left: 6px; }
+  .eic { --s: 15px; display: inline-flex; width: var(--s); height: var(--s); margin-right: 2px; vertical-align: calc(.36em - var(--s) / 2); color: var(--sh-muted); }
   .eic.flame { vertical-align: calc(.36em - var(--s) * .5625); }  /* the flame sits high in its box */
   .eic svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .efig .ibtn { vertical-align: calc(.36em - 8px); }
   .ehead .eic { --s: 13px; margin-right: 5px; }
-  .esep { margin: 0 5px; color: var(--sh-muted); }
-  .ecost { font-size: .85em; }
+  .efig dt { display: inline; margin-right: 5px; }
+  .ecost { font-size: .85em; margin-left: 5px; }
+  .unsettled .grade { opacity: .55; }
+
+  /* room panel */
+  .rp { grid-column: 1 / -1; display: grid; gap: 10px; padding: 10px 12px 12px; border-radius: 10px; border: 1px solid var(--sh-line);
+        background: color-mix(in srgb, var(--primary-text-color) 6%, transparent); }
+  .rp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .rp-name { display: block; font-size: .8125rem; color: var(--sh-muted); }
+  .rp-temp { font-size: 2rem; font-weight: 400; line-height: 1.05; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
+  .rp-trend { margin-left: 6px; font-size: .75rem; color: var(--sh-muted); }
+  .pill { flex: none; display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px; font-size: .75rem; font-weight: 600; white-space: nowrap; }
+  .pill.heat { background: var(--sh-heat); color: #fff; }
+  .pill.ok { background: color-mix(in srgb, var(--success-color, #43a047) 24%, transparent); color: var(--primary-text-color); }
+  .pill.wait { background: color-mix(in srgb, var(--warning-color, #f5a524) 24%, transparent); color: var(--primary-text-color); }
+  .pill.off, .pill.idle { background: color-mix(in srgb, var(--primary-text-color) 10%, transparent); color: var(--sh-muted); }
+  .rp-scale { width: 100%; max-width: 380px; justify-self: center; height: auto; overflow: visible; }
+  .rp-scale .track { stroke: var(--sh-line); stroke-width: 4; stroke-linecap: round; }
+  .rp-scale line { stroke: var(--sh-muted); stroke-width: 1.5; }
+  .rp-scale text { fill: var(--sh-muted); font-size: 9.5px; font-family: inherit; }
+  .rp-scale text.v { font-size: 9px; }
+  .rp-scale .on line { stroke: var(--sh-top); stroke-width: 2.5; }
+  .rp-scale .on text { fill: var(--sh-top); font-weight: 700; }
+  .rp-scale .now circle { fill: var(--primary-text-color); stroke: var(--card-background-color, #000); stroke-width: 2; }
+  .rp-scale .now text { fill: var(--primary-text-color); font-size: 11px; font-weight: 600; }
+  .rp .stepper-row { margin: 0; }
+  .rp .stepper button { width: 32px; height: 28px; line-height: 28px; font-size: 1.1rem; padding: 0; border: 0; border-radius: 8px; }
+  .rp .stepper output { font-size: 1rem; min-width: 52px; }
+  .rp-seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; border-radius: 10px;
+            background: color-mix(in srgb, var(--primary-text-color) 9%, transparent); }
+  .rp-seg button { all: unset; cursor: pointer; text-align: center; padding: 7px 0; border-radius: 8px; font-size: .8125rem; color: var(--primary-text-color); }
+  .rp-seg button[aria-pressed="true"] { background: color-mix(in srgb, var(--primary-text-color) 16%, transparent); font-weight: 600; }
+  .rp-seg button:focus-visible, .rp-toggle:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 1px; }
+  .rp-toggle { all: unset; cursor: pointer; display: flex; align-items: baseline; gap: 6px; padding-top: 8px; border-top: 1px solid var(--sh-line);
+               font-size: .8125rem; color: var(--primary-text-color); }
+  .rp-toggle small { color: var(--sh-muted); font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rp-toggle .chev2 { align-self: center; transform: rotate(-90deg); }
+  .rp-toggle .chev2.up { transform: none; }
+  .rp-more { display: grid; gap: 6px; margin-top: -4px; }
+  .rp-fc { display: grid; gap: 1px; padding: 4px 8px; border-radius: 8px;
+           background: color-mix(in srgb, var(--primary-text-color) 7%, transparent); font-size: .75rem; color: var(--sh-muted); }
+  .rp-fc > span { font-size: .625rem; }
+  .rp-fc.sum p { color: var(--primary-text-color); font-size: .6875rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rp-fc p { margin: 0; line-height: 1.45; text-align: center; }
+  .rp-fc b { font-weight: 500; color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
+  .rp-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-flow: row dense; gap: 5px; }
+  .rp-tile { display: grid; align-content: start; gap: 1px; min-width: 0; padding: 4px 8px; border-radius: 8px;
+             background: color-mix(in srgb, var(--primary-text-color) 7%, transparent); }
+  .rp-tile.s2 { grid-column: span 2; }
+  .rp-tile > span { font-size: .625rem; color: var(--sh-muted); }
+  .rp-tile > b { text-align: center; font-size: .78rem; font-weight: 500; color: var(--primary-text-color); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rp-tile .grade { font-style: normal; margin-right: 4px; font-size: .6875rem; line-height: 15px; min-width: 15px; padding: 0 4px; }
   footer.slim p { display: none; }
   footer.slim { flex-wrap: nowrap; }
   footer.slim .logbtn { margin-left: auto; white-space: nowrap; }
-  .cdetail .actions { padding: 8px 10px; }
-  .cdetail .actions p { margin-bottom: 6px; }
-  .cdetail .details { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 4px 10px; margin-bottom: 8px; }
-  .cdetail .details dd { font-size: .8125rem; }
-  .cdetail .actions .buttons button { padding: 4px 10px; font-size: .75rem; }
 
 
   /* mini layout */
@@ -1131,6 +1317,7 @@ const STYLE = `<style>
   .grade { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 4px; text-align: center; color: #fff; font-weight: 600; font-size: .75rem; line-height: 18px; }
   .g-A { background: #2e8b57; } .g-B { background: #4caf50; } .g-C { background: #8bc34a; } .g-D { background: #e0b020; }
   .g-E { background: #f08c2a; } .g-F { background: #e5612f; } .g-G { background: #d23a2f; }
+  .g-C, .g-D { color: #1c2024; }  /* white is unreadable on the light green and yellow */
 
   /* mode bar */
   .modebar { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
@@ -1199,7 +1386,8 @@ const STYLE = `<style>
   @keyframes sh-spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .badge .spin { animation-duration: 4s; } }
   .status .badge { margin-left: 4px; }
-  .badge.win svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+  .badge.win { font-size: .6875rem; padding: 1px 7px; gap: 3px; white-space: nowrap; }
+  .badge.win svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; }
   .badge.win.open { color: var(--primary-color); border-color: color-mix(in srgb, var(--primary-color) 45%, transparent); }
   .badge.win.close { color: var(--warning-color, #b26a00); border-color: color-mix(in srgb, var(--warning-color, #b26a00) 45%, transparent); }
   .winbox { margin-top: 10px; padding: 8px 12px; border-radius: 10px; font-size: .8125rem; color: var(--primary-text-color);

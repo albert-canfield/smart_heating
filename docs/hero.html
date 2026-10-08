@@ -105,7 +105,9 @@
   };
   hass.devices.house = { name: "Smart Heating" };
   add("house", "sensor.smart_heating_status", "heating", { reason: "3 rooms", boiler_demand: true, boiler_firing: true, has_boiler: true,
-    hot_water: false, night: false, away: false, open_rooms: ["living", "kitchen", "master"], heater_rooms: [] });
+    hot_water: false, night: false, away: false, open_rooms: [], heater_rooms: [], heating_rooms: ["Living room", "Kitchen", "Master bedroom"],
+    radiator_rooms: ["Living room", "Kitchen", "Master bedroom"], wanted_rooms: ["Living room", "Kitchen", "Master bedroom"],
+    monitor_only: false, boiler_called: true });
   add("house", "sensor.smart_heating_house_temperature", "19.4", { kind: "house_temperature" });
   add("house", "sensor.smart_heating_outdoor_day_mean", "8.6", { kind: "outdoor_day_mean", now: 7.9 });
   [[0, 18.1], [1, 18.9], [2, 19.1]].forEach(([f, t]) => add("house", `sensor.smart_heating_floor_${f}`, t, { kind: "floor_temperature", floor: f }));
@@ -125,15 +127,16 @@
   ];
   for (const [id, name, floor, temp, verdict, occupied] of rooms) {
     hass.devices[id] = { name };
-    add(id, `sensor.${id}_need`, occupied ? "comfort" : "baseline", { floor, priority: "a", temperature: temp, target: occupied ? 19 : 17,
-      comfort: 19, trend: occupied ? 0.9 : -0.1, occupied: !!occupied, has_trv: true, deficit: occupied ? 19 - temp : 0,
+    add(id, `sensor.${id}_need`, verdict === "approved" ? "comfort" : "none", { floor, priority: "a", temperature: temp, target: occupied ? 19 : 17,
+      target_source: occupied ? "comfort" : "baseline",
+      comfort: 19, trend: occupied ? 0.9 : -0.1, occupied: !!occupied, has_trv: true, deficit: occupied ? 19 - temp : 0, heating_now: verdict === "approved",
       temperature_entity: `sensor.${id}_t`, temperature_source: "sensor" });
     add(id, `sensor.${id}_decision`, verdict, { valve_command: verdict === "approved", reason: occupied ? "heating: occupied" : "at baseline" });
     add(id, `select.${id}_override`, "auto", {});
     add(id, `number.${id}_target`, "19.0", { kind: "room_target", vs_house: 0 });
     add(id, `sensor.${id}_tau`, "61", { kind: "heat_loss_tau", free_heat_gain: 5.2, calibration: 100 });
     add(id, `sensor.${id}_warm`, "1.3", { kind: "warm_up_rate" });
-    add(id, `sensor.${id}_pred`, "17.9", { kind: "predicted_2h", predicted_8h: 17.3, hours_to_baseline: 11.5 });
+    add(id, `sensor.${id}_pred`, "17.9", { kind: "predicted_2h", predicted_8h: 17.3, hours_to_baseline: 11.5, baseline: 17 });
     add(id, `sensor.${id}_ret`, "65", { kind: "heat_retention", grade: "C", rating: "good", settled: true, tau_low: 52, tau_high: 70, grade_range: "C" });
   }
   hass.states["sensor.living_t"] = { entity_id: "sensor.living_t", state: "18.2", attributes: { friendly_name: "Living room thermometer" } };
