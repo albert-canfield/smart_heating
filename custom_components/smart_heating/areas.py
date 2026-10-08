@@ -199,6 +199,8 @@ def discover(hass: HomeAssistant, area_id: str, heating_type: str | None = None)
         "trvs": sorted(e.entity_id for e in trvs),
         "heaters": sorted(e.entity_id for e in heaters),
         "presence": sorted(e.entity_id for e in entities if e.domain == "binary_sensor" and _dclass(e) in PRESENCE_CLASSES),
+        # Windows almost always face outside; doors are often internal, so those are added by hand.
+        "openings": sorted(e.entity_id for e in entities if e.domain == "binary_sensor" and _dclass(e) == "window"),
         "lights": sorted(e.entity_id for e in entities if e.domain == "light"),
         "media": sorted(e.entity_id for e in entities if e.domain == "media_player"),
     }

@@ -73,6 +73,7 @@ const ICON_PERSON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12"
 const ICON_BOLT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4.5 13.5H11L10 22l8.5-11.5H12z"/></svg>';
 const ICON_WINDOW = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="1.5"/><path d="M12 3.5v17M5 12h14"/></svg>';
 const ICON_CLOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>';
+const ICON_DOOR = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21h16"/><path d="M6 21V3h9v18"/><path d="M15 3.5l4 2V20l-4 1"/><circle cx="12.5" cy="12.5" r=".6"/></svg>';
 const ICON_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
 const ICON_FLAME = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.2 1.2-3.6 2.4-4.6.2 1.6 1 2.6 2.1 3C11 8.8 11.4 5.6 12 3z"/></svg>';
 
@@ -235,6 +236,10 @@ class SmartHeatingCard extends HTMLElement {
         radiator: a.radiator !== false,
         callsBoiler: a.calls_boiler !== false,
         roomState: a.room_state,  // controlled, follows_boiler, watched, not_working
+        opening: a.opening || null,  // "door" or "window" to outside, open now
+        openingName: a.opening_name || null,
+        openSince: a.open_since || null,
+        recoveringUntil: a.recovering_until || null,
         heaterStopped: a.heater_stopped || null,
         targetSource: a.target_source,  // which target applies: safety (frost), baseline, comfort (in use), manual
         inUse: a.target_source === "comfort",
@@ -776,9 +781,24 @@ class SmartHeatingCard extends HTMLElement {
         title="${esc(r.name)}: ${esc(r.reason)}">
         ${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}
         ${r.heaterOn ? `<span class="bolt" aria-label="heater on">${ICON_BOLT}</span>` : ""}
+        ${this._openIcon(r)}
         <span class="cname">${esc(r.name)}</span>
         <span class="ctemp">${r.temp == null ? "–" : r.temp.toFixed(1)}</span>
       </button>`;
+  }
+
+  // A small door or window icon while one to outside is open, or while the room recovers after it closed.
+  _openingText(r) {
+    const mins = (iso, sign) => Math.max(1, Math.round(sign * (Date.now() - new Date(iso).getTime()) / 60000));
+    if (r.opening) return `${r.openingName || (r.opening === "window" ? "Window" : "Door")} open ${mins(r.openSince, 1)} min: heating paused`;
+    if (r.recoveringUntil) return `${r.openingName || "Door"} closed: recovering, ${mins(r.recoveringUntil, -1)} min left before it may start the boiler`;
+    return "";
+  }
+
+  _openIcon(r) {
+    const text = this._openingText(r);
+    if (!text) return "";
+    return `<span class="opn ${r.opening ? "on" : ""}" title="${esc(text)}" role="img" aria-label="${esc(text)}">${r.opening === "window" ? ICON_WINDOW : ICON_DOOR}</span>`;
   }
 
   _room(r) {
@@ -791,7 +811,7 @@ class SmartHeatingCard extends HTMLElement {
       <button class="room v-${state} ${r.hasTrv || r.hasHeater ? "" : "dumb"}" data-room="${esc(r.name)}"
         aria-expanded="${this._open === r.name}"
         title="${esc(r.reason)}">
-        <span class="name">${esc(r.name)}${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}</span>
+        <span class="name">${esc(r.name)}${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}${this._openIcon(r)}</span>
         <span class="temp">${r.temp == null ? "–" : `${r.temp.toFixed(1)}°`}<small>${trend}</small></span>
         <span class="meta">${esc(label)}${r.target != null ? `<span class="target">to ${Number(r.target).toFixed(1)}°</span>` : ""}</span>
       </button>`;
@@ -821,7 +841,9 @@ class SmartHeatingCard extends HTMLElement {
   _panelState(r) {
     if (r.roomState === "not_working") return ["No temperature", "off"];
     if (r.roomState === "watched") return ["Watched only", "idle"];
+    if (r.opening && !r.heatingNow) return [r.opening === "window" ? "Window open" : "Door open", "wait"];
     if (r.override === "off") return ["Off by you", "off"];
+    if (r.recoveringUntil && !r.heatingNow) return ["Recovering", "wait"];
     if (r.heaterStopped && !r.heatingNow) return ["Heater stopped", "wait"];
     const st = this._state(r);
     if (st === "approved" || st === "piggyback") return [STATE_LABEL[st], "heat"];
@@ -904,6 +926,8 @@ class SmartHeatingCard extends HTMLElement {
     const [tag, text] = r.roomState === "not_working" ? ["No temperature", "check its thermometer (battery, range)"]
       : r.roomState === "watched" ? ["Watched only", "nothing here can heat it"]
       : r.heaterStopped && !r.heatingNow ? ["Heater kept off", r.heaterStopped]
+      : r.opening ? [`${r.openingName || "Door"} open`, "heating paused"]
+      : r.recoveringUntil ? [`${r.openingName || "Door"} closed`, `recovering, ${Math.max(1, Math.round((new Date(r.recoveringUntil).getTime() - Date.now()) / 60000))} min left`]
       : [why.tag, `target ${f(r.target)}, ${this._gap(r)}`];
     return `<div class="rp-fc sum" title="${esc(`${tag}: ${text}. ${why.text}`)}"><span>Summary</span><p><b>${esc(tag)}:</b> ${esc(text)}</p></div>
       ${forecast}<div class="rp-tiles">${tiles}</div>`;
@@ -1103,6 +1127,10 @@ const STYLE = `<style>
           padding: 8px 10px 8px 12px; border-radius: 6px; border-left: 3px solid transparent;
           background: color-mix(in srgb, var(--primary-text-color) 4%, transparent); min-height: 72px; }
   .room .name { font-size: .8125rem; color: var(--primary-text-color); display: flex; align-items: center; gap: 6px; }
+  .opn { display: inline-flex; flex: none; width: 12px; height: 12px; color: var(--sh-muted); }
+  .opn.on { color: var(--warning-color, #f5a524); }
+  .opn svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .room .name .opn { margin-left: 5px; vertical-align: -1px; }
   .inuse { display: inline-flex; flex: none; width: 11px; height: 11px; color: var(--secondary-text-color); }
   .inuse svg { width: 100%; height: 100%; fill: currentColor; }
   .room .name .inuse { margin-left: 5px; vertical-align: -1px; }

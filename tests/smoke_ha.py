@@ -521,6 +521,27 @@ async def main() -> None:
     c._heat_now(dt_util.utcnow(), c.data)
     assert c.heating_rooms == []
 
+    # A door to outside: the room pauses while it is open, then waits to recover after it closes.
+    living = c.rooms["living"]
+    living.openings, living.prev_calling = ["binary_sensor.back_door"], False
+    hass.states.async_set("sensor.living_t", "19.0")
+    hass.states.async_set("binary_sensor.back_door", "on", {"device_class": "door", "friendly_name": "Back door"})
+    await c.async_refresh()
+    assert living.open_since is not None and c.data.rooms["living"].verdict.value != "deferred"  # under a minute: ignored
+    living.open_since -= timedelta(minutes=5)
+    hass.states.async_set("sensor.living_t", "17.4")  # cold air in
+    await c.async_refresh()
+    print("door open ->", c.data.rooms["living"].reason)
+    assert "door open" in c.data.rooms["living"].reason and "living" not in c.data.wanted_rooms
+    hass.states.async_set("binary_sensor.back_door", "off", {"device_class": "door", "friendly_name": "Back door"})
+    await c.async_refresh()
+    print("door closed ->", c.data.rooms["living"].reason, "| until", living.recovery_until)
+    assert living.recovery_until is not None and "recovering" in c.data.rooms["living"].reason
+    hass.states.async_set("sensor.living_t", "19.0")  # the rest of the house brought it back
+    await c.async_refresh()
+    assert living.recovery_until is None and living.recoveries and living.recoveries[-1] is not None
+    living.openings = []
+
     # The log survives a restart.
     await c.async_stop()
     c2 = HeatingCoordinator(hass, entry)

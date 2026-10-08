@@ -50,6 +50,7 @@
     ["kitchen", "Kitchen", 1, 18.8, "piggyback", true, { heater: true, reason: "topping up while boiler runs", grade: ["B", "very good", 84] }],
     ["land1", "Landing", 1, 19.6, "idle", false, { trv: false }], ["living", "Living room", 1, 18.2, "approved", true],
     ["wc", "Downstairs WC", 0, 18.4, "idle", false, { trv: false }], ["hall", "Hall", 0, 18.0, "idle", false, { trv: false }],
+    ["utility", "Utility room", 0, 16.1, "deferred", false, { opening: "door", openingName: "Back door", reason: "door open: heating paused" }],
     ["office", "Office", 0, 17.6, "idle"], ["play", "Play room", 0, 17.9, "approved", true],
   ];
 
@@ -87,6 +88,8 @@
         target: o.mode === "off" ? 12 : occupied ? 19 : 17, target_source: o.mode === "off" ? "safety" : occupied ? "comfort" : "baseline",
         comfort: 19, trend: occupied ? 0.6 : -0.1, occupied: !!occupied, has_trv: x.trv !== false, has_heater: !!x.heater,
         heater_on: !!x.heater && o.status === "heating", deficit: occupied ? +(19 - temp).toFixed(1) : 0,
+        opening: x.opening || null, opening_name: x.openingName || null,
+        open_since: x.opening ? new Date(Date.now() - 4 * 60000).toISOString() : null,
         heating_now: o.status === "heating" && (verdict === "approved" || verdict === "piggyback"),
         temperature_entity: `sensor.${id}_t`, temperature_source: "sensor" });
       add(id, `sensor.${id}_decision`, v, { valve_command: v === "approved", reason: x.reason || (occupied ? "heating: occupied" : "at baseline") });

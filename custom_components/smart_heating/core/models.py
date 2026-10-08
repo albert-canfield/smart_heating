@@ -92,6 +92,8 @@ class RoomSnapshot:
     heater_on: bool | None = None
     prev_calling: bool = False
     deferred_min: float = 0.0  # how long this room has been deferred
+    opening: str | None = None  # "door" or "window" to outside, open for at least a minute
+    recovering_min: float = 0.0  # minutes left waiting for the room to recover after it closed
 
 
 @dataclass

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.0
+- Doors and windows to outside: a new room setting for their contact sensors (window sensors in the area are filled in; outside doors are added by hand). While one is open for more than a minute the room pauses: its TRV closes or its heater goes off, and it does not ask for heat; frost protection still can. After it closes the room waits up to 20 minutes for heat from the rest of the house before it may start the boiler, only when the drop was the opening's doing, and it stops waiting once it is back where it was or if it is still falling 10 minutes after closing.
+- A small door or window icon on the room while one is open or the room is recovering, with a tooltip; the room panel says "Door open: heating paused" or "Front door closed: recovering, 12 min left".
+- A phone alert to whoever is home when one stays open 30 minutes while the heating is needed.
+- The drop while open, and the hour after, is left out of learning. Each room's recovery times are kept in diagnostics (`recoveries_min`) to learn a per-room wait later.
+- Window advice: no "close the windows" reminder when the advised rooms' window sensors all read shut.
+- README: screenshots and the How it decides diagram show doors and windows.
+
 ## 0.13.0
 - New room panel. Tap a room: its temperature and state on top, and a scale with the frost, night, empty and in-use temperatures, the one that applies now lit up. Then **Target when in use** with **Auto / Heat now / Off** under it (the panel stays open after a tap). **Room profile** folds out a one-line summary of why the room has its target, a **Prediction without heating** (in 2 h, in 8 h, and when it would reach the baseline), and small tiles for insulation, warm-up and free heat, plus the heater and its energy, or an always-open radiator, where there is one.
 - The card shows what really happens, from device states: a room counts as heating only while the boiler heats its radiator (TRV open, or no TRV, like a bypass radiator) or its electric heater is on. Fixes "Heating 0 rooms" while rooms heated (valves already open were not counted), orange rooms while the boiler was paused for hot water, waiting, held by boiler protection, disabled or watching only, and the heat test showing its rooms as idle. Rooms that want heat but get none yet show as **Wants heat**.

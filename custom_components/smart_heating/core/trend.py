@@ -18,6 +18,10 @@ class Trend:
         while self._samples and when - self._samples[0][0] > self._window:
             self._samples.popleft()
 
+    def last(self) -> float | None:
+        """The latest reading, if any."""
+        return self._samples[-1][1] if self._samples else None
+
     def rate(self) -> float | None:
         """Least-squares slope in degC per hour."""
         if len(self._samples) < 3:

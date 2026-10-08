@@ -937,3 +937,26 @@ def test_heater_rests_after_two_hours_and_has_a_ceiling():
 def test_house_mean_leaves_out_rooms_nothing_heats():
     avg, floors = house_means([(0, 19.0), (0, 9.0, False), (1, 21.0)])
     assert avg == 20.0 and floors == {0: 14.0, 1: 21.0}
+
+
+# ---------- doors and windows to outside ----------
+
+def test_open_door_pauses_the_room_and_closes_its_valve():
+    rooms = [(LIVING, RoomSnapshot(temp=17.0, occupied=True, valve_open=True, opening="door")),
+             (KITCHEN, RoomSnapshot(temp=17.0, occupied=True, valve_open=False))]
+    p = make_plan(rooms, house(), S)
+    assert p.boiler_on and p.rooms["living"].verdict is Verdict.DEFERRED and "door open" in p.rooms["living"].reason
+    assert p.rooms["living"].open_valve is False and "living" not in p.wanted_rooms
+    alone = make_plan([(LIVING, RoomSnapshot(temp=17.0, occupied=True, opening="window"))], house(), S)
+    assert not alone.boiler_on
+    frost = make_plan([(LIVING, RoomSnapshot(temp=6.0, opening="window"))], house(), S)
+    assert frost.boiler_on  # frost protection still heats
+
+
+def test_recovering_room_waits_unless_asked_or_freezing():
+    waiting = make_plan([(LIVING, RoomSnapshot(temp=17.5, occupied=True, recovering_min=12))], house(), S)
+    assert not waiting.boiler_on and "recovering" in waiting.rooms["living"].reason
+    asked = make_plan([(LIVING, RoomSnapshot(temp=17.5, override=Override.HEAT, recovering_min=12))], house(), S)
+    assert asked.boiler_on
+    frost = make_plan([(LIVING, RoomSnapshot(temp=6.0, recovering_min=12))], house(), S)
+    assert frost.boiler_on

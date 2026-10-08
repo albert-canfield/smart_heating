@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.13.0"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.14.0"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -45,6 +45,11 @@ GAS_FIRING_SHARE = 0.7  # a modulating boiler burns about this share of its inpu
 GAS_HOB_KWH = 0.5  # starting value for gas used with the boiler off (hob), per day
 COLD_BASE = 15.5  # heating runs harder below this outdoor mean
 FREE_AFTER_MIN = 60  # minutes with the radiators off before cooling data counts
+OPENING_MIN = 1  # a door or window counts as open after this long (someone walking through doesn't)
+RECOVERY_MIN = 20  # after it closes, the room waits this long for heat from the rest of the house
+RECOVERY_GIVE_UP_MIN = 10  # ...unless it is still falling this long after closing: nothing is coming
+OPEN_ALERT_MIN = 30  # phone alert when one stays open this long while heating is needed
+OPENING_LEARN_SKIP_MIN = 60  # cooling samples left out after it closes
 HOUSE_BASE_KWH = 6.0  # starting value for the rest of the house's electricity, per day
 STEP_SETTLE_S = 90  # read house power this long after a heater switches
 FORECAST_RETRY_MIN = 5  # after a failed or empty fetch (e.g. the weather entity still starting)
@@ -59,6 +64,7 @@ CONF_TEMP = "temperature_sensor"
 CONF_HUMIDITY = "humidity_sensor"
 CONF_TRVS = "trvs"
 CONF_PRESENCE = "presence"
+CONF_OPENINGS = "openings"  # contact sensors on doors and windows to outside
 CONF_MEDIA = "media"
 CONF_LIGHTS = "lights"
 CONF_SCHEDULE = "schedule"

@@ -95,6 +95,11 @@ from .const import (
     OPT_WINDOW_ALERTS,
     WINDOW_PUSH_MAX,
     FREE_AFTER_MIN,
+    OPENING_MIN,
+    RECOVERY_MIN,
+    RECOVERY_GIVE_UP_MIN,
+    OPEN_ALERT_MIN,
+    OPENING_LEARN_SKIP_MIN,
     OPT_NIGHT_START,
     OPT_NIGHT_END,
     DEFAULT_NIGHT_START,
@@ -102,6 +107,7 @@ from .const import (
     SAVE_DELAY_S,
     STORE_VERSION,
     CONF_PRESENCE,
+    CONF_OPENINGS,
     CONF_PRIORITY,
     CONF_SCHEDULE,
     CONF_TEMP,
@@ -192,6 +198,15 @@ class Room:
     heater_block: Block | None = None  # why its heater is kept off right now
     alerted: dict = field(default_factory=dict)  # block kind -> last phone alert
     no_temp_since: datetime | None = None
+    openings: list[str] = field(default_factory=list)  # contact sensors on doors and windows to outside
+    open_since: datetime | None = None
+    open_entity: str | None = None
+    temp_before: float | None = None  # just before it opened
+    calling_before: bool = False  # was the room already asking for heat when it opened?
+    closed_at: datetime | None = None
+    recovery_until: datetime | None = None
+    open_alerted: bool = False
+    recoveries: list = field(default_factory=list)  # minutes each recovery took, or None: for learning later
 
     @property
     def entities(self) -> list[str]:
@@ -267,6 +282,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 humidity_entity=d.get(CONF_HUMIDITY),
                 trvs=list(d.get(CONF_TRVS, [])),
                 presence=list(d.get(CONF_PRESENCE, [])),
+                openings=list(d.get(CONF_OPENINGS, [])),
                 media=list(d.get(CONF_MEDIA, [])),
                 lights=list(d.get(CONF_LIGHTS, [])),
                 schedule=d.get(CONF_SCHEDULE),
@@ -1269,6 +1285,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             else:
                 quiet = min(mins, gas_min) if cfg.radiator else mins
                 phase = Phase.FREE if quiet >= FREE_AFTER_MIN else Phase.OTHER
+            if room.open_since or (room.closed_at and now - room.closed_at < timedelta(minutes=OPENING_LEARN_SKIP_MIN)):
+                phase = Phase.OTHER  # a door or window to outside: not the room's own cooling
             room.model.observe(now, snap.temp, tout, phase, rh=self._float(room.humidity_entity), day=day)
 
     def _windows_step(self, now: datetime, house: HouseSnapshot, pairs, plan: Plan) -> None:
@@ -1312,13 +1330,18 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             if night or len(self._window_pushes) >= WINDOW_PUSH_MAX:
                 return []
             sent = self._send("Smart Heating", adv.reason, home_only=True, tag=f"{DOMAIN}_windows")
-        elif self._window_open_to:
+        elif self._window_open_to and not self._windows_shut(adv.rooms):
             sent = self._send("Smart Heating", adv.reason, tag=f"{DOMAIN}_windows", to=self._window_open_to)
         else:
             return []
         if sent:
             self._window_pushes.append(now)
         return sent
+
+    def _windows_shut(self, names: list[str]) -> bool:
+        """The advised rooms have window sensors and every one reads shut: nothing to remind about."""
+        sensors = [e for r in self.rooms.values() if r.cfg.name in names for e in r.openings]
+        return bool(sensors) and not any(self._is_on(e) for e in sensors)
 
     def heater_power_w(self, room: Room) -> float:
         """Present electric draw of a room's heaters in W: measured if a power sensor exists, else rated."""
@@ -1744,9 +1767,11 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         if room.override_until and now >= room.override_until:
             room.override, room.override_until = Override.AUTO, None
 
+        prev = room.trend.last()
         temp = self.room_temp(room)
         if temp is not None:
             room.trend.add(now, temp)
+        opening, recovering = self._opening_state(room, now, temp, prev)
 
         room.occupied = is_occupied(
             now,
@@ -1766,7 +1791,53 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             heater_on=self._heater_on(room) if room.heaters else None,
             prev_calling=room.prev_calling,
             deferred_min=_minutes(now, room.deferred_since) if room.deferred_since else 0.0,
+            opening=opening,
+            recovering_min=recovering,
         )
+
+    def _opening_state(self, room: Room, now: datetime, temp: float | None, prev: float | None) -> tuple[str | None, float]:
+        """A door or window to outside: ("door"/"window" once open a minute, minutes left of the recovery wait).
+
+        After it closes the room waits RECOVERY_MIN for heat from the rest of the house, but only when the
+        drop was the opening's doing (the room was not already asking for heat), and it stops waiting once
+        the room is back where it was, or if it is still falling RECOVERY_GIVE_UP_MIN after closing."""
+        if not room.openings:
+            return None, 0.0
+        open_now = [e for e in room.openings if self._is_on(e)]
+        if open_now:
+            if room.open_since is None:
+                room.open_since, room.open_entity = now, open_now[0]
+                room.temp_before = prev if prev is not None else temp
+                room.calling_before, room.recovery_until = room.prev_calling, None
+            open_min = _minutes(now, room.open_since)
+            if open_min >= OPEN_ALERT_MIN and not room.open_alerted and not self._season_off:
+                room.open_alerted = True
+                name = self._friendly(room.open_entity)
+                self._log(f"{name} open for {OPEN_ALERT_MIN} min", room=room.cfg.name)
+                self._send("Smart Heating", f"{room.cfg.name}: {name} has been open for {OPEN_ALERT_MIN} min.", home_only=True)
+            return (self._opening_kind(room.open_entity) if open_min >= OPENING_MIN else None), 0.0
+        if room.open_since is not None:  # just closed
+            if _minutes(now, room.open_since) >= OPENING_MIN:
+                room.closed_at = now
+                room.recovery_until = None if room.calling_before else now + timedelta(minutes=RECOVERY_MIN)
+            room.open_since, room.open_alerted = None, False
+        if room.recovery_until is None:
+            return None, 0.0
+        recovered = temp is not None and room.temp_before is not None and temp >= room.temp_before - 0.1
+        falling = _minutes(now, room.closed_at) >= RECOVERY_GIVE_UP_MIN and (room.trend.rate() or 0.0) < -0.1
+        if recovered or falling or now >= room.recovery_until:
+            room.recoveries = (room.recoveries + [round(_minutes(now, room.closed_at)) if recovered else None])[-10:]
+            room.recovery_until = None
+            return None, 0.0
+        return None, _minutes(room.recovery_until, now)
+
+    def _opening_kind(self, entity_id: str | None) -> str:
+        st = self._state(entity_id)
+        return "window" if st is not None and st.attributes.get("device_class") == "window" else "door"
+
+    def _friendly(self, entity_id: str | None) -> str:
+        st = self._state(entity_id)
+        return str(st.attributes.get("friendly_name") or entity_id) if st is not None else str(entity_id)
 
     # ---------- actuation ----------
 

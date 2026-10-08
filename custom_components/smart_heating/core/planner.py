@@ -50,8 +50,17 @@ def make_plan(
         if snap.temp is None:
             decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.FAULT, need.reason)
             continue
+        if snap.opening and need.level is not Level.SAFETY:
+            # Open to outside: pause the room (its valve closes, its heater goes off). Frost still heats.
+            decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.DEFERRED, f"{snap.opening} open: heating paused")
+            continue
         if not need.calling:
             decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.IDLE, need.reason)
+            continue
+        if snap.recovering_min > 0 and need.level not in (Level.SAFETY, Level.MANUAL):
+            # Just closed: the drop came from the opening, the rest of the house usually brings it back.
+            decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.DEFERRED,
+                                                  f"recovering after the door or window closed, {snap.recovering_min:.0f} min left")
             continue
         if need.level is Level.SAFETY:
             approved.append((cfg, snap))

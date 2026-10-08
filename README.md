@@ -77,7 +77,7 @@ Smart Heating heats from day one with sensible defaults and learns your home in 
 
 # Documentation
 
-Version 0.13.0. How it starts:
+Version 0.14.0. How it starts:
 
 1. **Heating from day one** (or **Watching** if you picked *Watch first*: it decides and logs, never touches the boiler or TRVs, until you tap **Start heating** and confirm).
 2. **Learning in the background**: each room's heat-loss time constant, free-heat gain and warm-up rate, from normal life. Heating decisions don't wait for it.
@@ -162,6 +162,8 @@ Thermostat style: **Setpoint** (recommended: it gets the target and regulates, s
 
 Electric heaters: a smart plug is switched on/off; a smart heater gets the room target and hvac off when not needed. Enter the heater's power (e.g. 2000 W) and optional eco power (e.g. 1000 W, used when a smart heater reports an eco preset). If the plug or heater has its own power sensor it is found automatically and measured power is used instead. Sensors: electricity today (kWh, with a projection to midnight), cost today, and per-room energy today.
 
+**Doors and windows to outside.** Give a room the contact sensors on its doors and windows that open to outside. While one is open for more than a minute the room pauses: its TRV closes (or its heater goes off) and it does not ask for heat; frost protection still can. After it closes, the room waits up to 20 minutes for heat from the rest of the house before it may start the boiler, because a short opening (the school run, a delivery) usually comes back on its own. It only waits when the drop was the opening's doing (the room wasn't already asking for heat), and stops waiting once it is back where it was, or if it is still falling 10 minutes after closing. The drop is left out of learning, a small door or window icon on the room shows it (hover for how long), whoever is home gets a phone alert if one stays open 30 minutes while the heating is needed, and window advice only reminds you to close windows that are actually open. How long each room took to recover is kept in diagnostics, to tune the wait per room later.
+
 **Electric heater safety.** A heater only runs with a live temperature behind it. A room with a heater needs a thermometer, a TRV or a smart heater that reports temperature (the room form refuses it otherwise), and the heater is kept off, with a phone alert and a Repairs entry, when:
 - the room's reading hasn't been reported for 60 minutes (a thermometer with a dead battery often keeps its last value instead of going unavailable),
 - the heater has been on for 30 minutes and the reading hasn't moved at all (a stuck sensor, or a heater that isn't heating),
@@ -225,6 +227,7 @@ For each area it picks up: the area's own temperature and humidity sensors (Sett
 | TRVs | pre-filled with the area's `climate` entities; empty = a radiator without a valve, always open while the boiler runs |
 | Can switch the boiler on | on by default; off for an always-open radiator such as a bypass in the hall: it warms whenever another room calls, but never starts the boiler by itself (frost protection and Heat now still can) |
 | Presence sensors, lights, media players | pre-filled from the area |
+| Doors and windows to outside | contact sensors; window sensors in the area are pre-filled, add outside doors by hand (see below) |
 | Comfort schedule | optional, e.g. bedroom evenings |
 
 Room devices created by Smart Heating are placed in their area, so they appear on the area's page.
