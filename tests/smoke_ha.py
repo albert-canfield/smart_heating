@@ -461,6 +461,23 @@ async def main() -> None:
     print("outdoor day mean attrs:", {k: v for k, v in od.items() if k != "kind"})
     print("calibration attrs:", {k: v for k, v in cal.extra_state_attributes.items() if k != "rooms"})
 
+    # Room devices hang under the house device, as HA's entity platform registers them
+    # (via_device_id where HA has it, the deprecated via_device on older HA).
+    from unittest.mock import MagicMock
+    from homeassistant.helpers import device_registry as dr
+    from custom_components.smart_heating import entity as sh_entity
+    saved_entries, hass.config_entries = hass.config_entries, MagicMock()
+    hass.config_entries.async_get_entry = lambda eid: entry if eid == entry.entry_id else None
+    house_info = next(e for e in ents if isinstance(e, sh_entity.HouseEntity)).device_info
+    house_dev = dr.async_get(hass).async_get_or_create(config_entry_id=entry.entry_id, **house_info)
+    rid = next(iter(c.rooms))
+    info = sh_entity.RoomEntity(c, rid, "need").device_info
+    assert ("via_device_id" in info) == sh_entity._VIA_ID and ("via_device" in info) != sh_entity._VIA_ID, info
+    room_dev = dr.async_get(hass).async_get_or_create(config_entry_id=entry.entry_id, config_subentry_id=rid, **info)
+    assert room_dev.via_device_id == house_dev.id, (room_dev, house_dev)
+    hass.config_entries = saved_entries
+    print("room device under the house device via", "via_device_id" if sh_entity._VIA_ID else "via_device")
+
     # Window advice: damp bedroom, rain outside but far drier air. Only the person at home is told.
     from homeassistant.config_entries import ConfigEntry as _CE
     from homeassistant.helpers import device_registry as dr, entity_registry as er
@@ -528,15 +545,17 @@ async def main() -> None:
     hass.states.async_set("binary_sensor.back_door", "on", {"device_class": "door", "friendly_name": "Back door"})
     await c.async_refresh()
     assert living.open_since is not None and c.data.rooms["living"].verdict.value != "deferred"  # under a minute: ignored
+    assert living.opening is None, "the card says paused only once control pauses"
     living.open_since -= timedelta(minutes=5)
     hass.states.async_set("sensor.living_t", "17.4")  # cold air in
     await c.async_refresh()
     print("door open ->", c.data.rooms["living"].reason)
     assert "door open" in c.data.rooms["living"].reason and "living" not in c.data.wanted_rooms
+    assert living.opening == "door"
     hass.states.async_set("binary_sensor.back_door", "off", {"device_class": "door", "friendly_name": "Back door"})
     await c.async_refresh()
     print("door closed ->", c.data.rooms["living"].reason, "| until", living.recovery_until)
-    assert living.recovery_until is not None and "recovering" in c.data.rooms["living"].reason
+    assert living.recovery_until is not None and "recovering" in c.data.rooms["living"].reason and living.opening is None
     hass.states.async_set("sensor.living_t", "19.0")  # the rest of the house brought it back
     await c.async_refresh()
     assert living.recovery_until is None and living.recoveries and living.recoveries[-1] is not None
@@ -554,6 +573,7 @@ async def main() -> None:
     from custom_components.smart_heating import async_remove_entry
     stored = hass.config.path(".storage", f"smart_heating.{entry.entry_id}")
     assert os.path.exists(stored)
+    hass.config_entries = SimpleNamespace(async_entries=lambda domain: [entry])  # the last entry: card removed too
     await async_remove_entry(hass, entry)
     assert not os.path.exists(stored), "store removed with the entry"
     await hass.async_stop()

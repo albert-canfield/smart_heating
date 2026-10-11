@@ -251,7 +251,7 @@ class RoomNeed(RoomEntity, SensorEntity):
             "calls_boiler": room.cfg.calls_boiler,
             "room_state": self.coordinator.room_state(room),
             # A door or window to outside: open now (after a minute), and the recovery wait once it closes.
-            "opening": self.coordinator._opening_kind(room.open_entity) if room.open_since else None,
+            "opening": room.opening,
             "opening_name": self.coordinator._friendly(room.open_entity) if room.open_since or room.recovery_until else None,
             "open_since": room.open_since.isoformat() if room.open_since else None,
             "recovering_until": room.recovery_until.isoformat() if room.recovery_until else None,

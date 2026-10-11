@@ -201,6 +201,7 @@ class Room:
     openings: list[str] = field(default_factory=list)  # contact sensors on doors and windows to outside
     open_since: datetime | None = None
     open_entity: str | None = None
+    opening: str | None = None  # "door"/"window" while control pauses the room (open a minute or more)
     temp_before: float | None = None  # just before it opened
     calling_before: bool = False  # was the room already asking for heat when it opened?
     closed_at: datetime | None = None
@@ -1649,7 +1650,9 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 if points:  # an empty answer keeps the forecast we have
                     self.outdoor.set_forecast(points)
             except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("Forecast fetch from %s failed: %s", weather, err)
+                # While HA starts the weather integration may not be set up yet; the retry below covers it.
+                starting = not self.hass.is_running or self.hass.states.get(weather) is None
+                (_LOGGER.debug if starting else _LOGGER.warning)("Forecast fetch from %s failed: %s", weather, err)
             if not points:  # try again soon rather than in half an hour
                 self._forecast_at = now - timedelta(minutes=FORECAST_REFRESH_MIN - FORECAST_RETRY_MIN)
 
@@ -1772,6 +1775,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         if temp is not None:
             room.trend.add(now, temp)
         opening, recovering = self._opening_state(room, now, temp, prev)
+        room.opening = opening
 
         room.occupied = is_occupied(
             now,

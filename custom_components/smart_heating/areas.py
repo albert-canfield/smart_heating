@@ -74,6 +74,15 @@ def floor_names(hass: HomeAssistant) -> dict[int, str]:
     return out
 
 
+def _device_words(dev: Any) -> list[str | None]:
+    """A device's name, model and maker. Child devices (HA 2026.10+) have no model or maker."""
+    if dev is None:
+        return []
+    if not isinstance(dev, dr.DeviceEntry):
+        return [dev.name]
+    return [dev.name, dev.model, dev.manufacturer]
+
+
 def _area_entities(hass: HomeAssistant, area_id: str) -> list[er.RegistryEntry]:
     ents = er.async_get(hass)
     devs = dr.async_get(hass)
@@ -125,7 +134,7 @@ def rank_room_sensors(hass: HomeAssistant, area_id: str, device_class: str) -> l
         if e.device_id in trv_devices:
             continue
         dev = devs.async_get(e.device_id) if e.device_id else None
-        text = " ".join(filter(None, [e.entity_id, e.original_name, dev and dev.name, dev and dev.model, dev and dev.manufacturer]))
+        text = " ".join(filter(None, [e.entity_id, e.original_name, *_device_words(dev)]))
         if _NOT_ROOM_TEMP.search(e.entity_id + " " + (e.original_name or "")) or _JUNK_DEVICE.search(text):
             continue
         score, why = 0, []
@@ -151,7 +160,7 @@ _HEATER_HINT = re.compile(r"heater|heating panel|panel heater|convector|radiator
 
 def _device_text(hass: HomeAssistant, e: er.RegistryEntry) -> str:
     dev = dr.async_get(hass).async_get(e.device_id) if e.device_id else None
-    return " ".join(filter(None, [e.entity_id, e.original_name, e.name, dev and dev.name, dev and dev.model, dev and dev.manufacturer]))
+    return " ".join(filter(None, [e.entity_id, e.original_name, e.name, *_device_words(dev)]))
 
 
 def power_sensors(hass: HomeAssistant, heaters: list[str]) -> dict[str, str]:

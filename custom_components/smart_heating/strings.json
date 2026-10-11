@@ -547,9 +547,6 @@
       "energy_today": {
         "name": "Energy today"
       },
-      "heater_power": {
-        "name": "Heater power"
-      },
       "hot_water_gas_today": {
         "name": "Hot water gas today"
       },

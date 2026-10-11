@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.1
+- The card loads more reliably. It could show "Configuration error" on a page opened while Home Assistant was still starting: Home Assistant serves dashboards before custom integrations have started, and a page only picks up an integration's card script when it loads, so such a page never got the card. The card is now copied to `www/smart_heating/` (served from the start) and kept as a dashboard resource that every dashboard loads, updated automatically after each update. Still one HACS install.
+- The card is sent gzipped (24 KB instead of 95 KB) to browsers that accept it.
+- The browser console shows a **Smart Heating 0.14.1** badge when the card loads, and a warning if an older copy is already running.
+- While Home Assistant starts, the card says "Smart Heating is starting" instead of asking to add rooms.
+- Deleting Smart Heating also removes its dashboard resource and the copy in `www`.
+- Room devices link to the house device by device id on Home Assistant 2026.8 and later (`via_device_id`), which ends the "deprecated `via_device` parameter" warnings; the old link stops working in 2027.8. Older versions keep the old link.
+- Reconfigure (house and rooms) shows "Saved." / "Room saved." again on Home Assistant 2026.10 and later, and reloads Smart Heating once instead of twice. Home Assistant 2026.12 would have rejected the second reload. If set-up had failed, saving still reloads it to try again.
+- Room sensor discovery skips the model and maker of Home Assistant 2026.10's new child devices (reading them warns now and fails from 2027.9).
+- The card no longer says "Door open: heating paused" during the first minute, before the room is actually paused.
+- No more "Forecast fetch failed" warning while Home Assistant starts and the weather entity isn't there yet (it retries within minutes, as before).
+
 ## 0.14.0
 - Doors and windows to outside: a new room setting for their contact sensors (window sensors in the area are filled in; outside doors are added by hand). While one is open for more than a minute the room pauses: its TRV closes or its heater goes off, and it does not ask for heat; frost protection still can. After it closes the room waits up to 20 minutes for heat from the rest of the house before it may start the boiler, only when the drop was the opening's doing, and it stops waiting once it is back where it was or if it is still falling 10 minutes after closing.
 - A small door or window icon on the room while one is open or the room is recovering, with a tooltip; the room panel says "Door open: heating paused" or "Front door closed: recovering, 12 min left".

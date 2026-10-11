@@ -10,6 +10,8 @@
  *   hide_title: false     # optional
  */
 
+const CARD_VERSION = "0.14.1";  // keep in step with const.py VERSION (tests/test_card.py checks)
+
 const STATE_LABEL = {
   approved: "Heating",
   piggyback: "Topping up",
@@ -277,6 +279,7 @@ class SmartHeatingCard extends HTMLElement {
 
     return {
       rooms,
+      starting: !house.status && Object.keys(byDevice).length > 0,  // entities known, integration not set up yet
       status: house.status?.state,
       reason: house.status?.attributes.reason,
       firing: house.status?.attributes.boiler_firing,
@@ -536,9 +539,9 @@ class SmartHeatingCard extends HTMLElement {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
 
     if (!d.rooms.length) {
-      this.shadowRoot.innerHTML = `${STYLE}<ha-card><div class="empty">
-        Add rooms in Settings, Devices &amp; services, Smart Heating, then <b>Add room</b>.
-      </div></ha-card>`;
+      this.shadowRoot.innerHTML = `${STYLE}<ha-card><div class="empty">${d.starting
+        ? "Smart Heating is starting. The card fills in as soon as it is ready."
+        : "Add rooms in Settings, Devices &amp; services, Smart Heating, then <b>Add room</b>."}</div></ha-card>`;
       return;
     }
 
@@ -1514,8 +1517,15 @@ const STYLE = `<style>
   .sdot.d-starting::after { animation: sh-pulse 1.6s ease-out infinite; }
 </style>`;
 
-if (!customElements.get("smart-heating-card")) {
+SmartHeatingCard.version = CARD_VERSION;
+const running = customElements.get("smart-heating-card");
+if (!running) {
   customElements.define("smart-heating-card", SmartHeatingCard);
+  console.info(`%c Smart Heating %c ${CARD_VERSION} `,
+    "color:#fff;background:#FF6B3D;font-weight:700;padding:2px 4px;border-radius:4px 0 0 4px",
+    "color:#fff;background:#101826;font-weight:700;padding:2px 4px;border-radius:0 4px 4px 0");
+} else if (running.version !== CARD_VERSION) {
+  console.warn(`Smart Heating card ${running.version || "(older)"} is running, ${CARD_VERSION} arrived late: refresh the page`);
 }
 window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === "smart-heating-card")) window.customCards.push({

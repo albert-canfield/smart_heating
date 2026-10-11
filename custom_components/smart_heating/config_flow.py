@@ -1,6 +1,7 @@
 """Config flow: house setup, tuning options, and rooms as subentries."""
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import voluptuous as vol
@@ -97,6 +98,10 @@ from .const import (
     SUBENTRY_ROOM,
 )
 from .core import Settings
+
+# Room saved: HA 2026.10+ shows its own generic text unless the reason is passed; 2026.2 has no reason argument
+# and shows ours.
+_ROOM_SAVED = {"reason": "reconfigure_successful"} if "reason" in inspect.signature(ConfigSubentryFlow.async_update_and_abort).parameters else {}
 
 
 def _ent(domain: str | list[str], multiple: bool = False, device_class: str | None = None):
@@ -402,7 +407,11 @@ class SmartHeatingConfigFlow(_HouseSteps, ConfigFlow, domain=DOMAIN):
 
     async def _finish_house(self) -> ConfigFlowResult:
         if self._reconfigure:
-            return self.async_update_reload_and_abort(self._get_reconfigure_entry(), data=self._data, options=self._options)
+            entry = self._get_reconfigure_entry()
+            if entry.update_listeners:  # loaded: its update listener reloads it (HA 2026.12+ rejects a second reload)
+                return self.async_update_and_abort(entry, data=self._data, options=self._options, reason="reconfigure_successful")
+            # Not loaded (set-up failed): reload to try again with the new settings.
+            return self.async_update_reload_and_abort(entry, data=self._data, options=self._options, reason="reconfigure_successful")
         return await self.async_step_rooms()
 
     async def async_step_rooms(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -714,7 +723,7 @@ class RoomSubentryFlow(ConfigSubentryFlow):
                 data = {**({CONF_AREA: area_id} if area_id else {CONF_NAME: sub.data.get(CONF_NAME, sub.title)}), **user_input}
                 if CONF_FLOOR in data:
                     data[CONF_FLOOR] = int(data[CONF_FLOOR])
-                return self.async_update_and_abort(self._get_entry(), sub, title=name, data=data)
+                return self.async_update_and_abort(self._get_entry(), sub, title=name, data=data, **_ROOM_SAVED)
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=_room_schema(user_input or dict(sub.data), need_floor=level is None, heating_type=self._type),

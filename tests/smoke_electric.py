@@ -324,6 +324,41 @@ async def main() -> None:
     assert r["type"] == "abort" and r["reason"] == "relearned" and c.rooms["cafe"].model.heat_n == 0, r
     print("relearn rooms (options) ok")
 
+    # Reconfigure shows our own "Saved."; a loaded entry is reloaded by its update listener alone
+    # (HA 2026.12+ rejects reloading it a second time), one whose set-up failed is reloaded to retry.
+    import logging
+    from unittest.mock import patch
+    reported, reloads = [], []
+    catch = logging.Handler(); catch.emit = lambda rec: reported.append(rec.getMessage())
+    logging.getLogger().addHandler(catch)
+
+    async def listener(h, e):
+        reloads.append("listener")
+    with patch.object(hass.config_entries, "async_schedule_reload", lambda eid: reloads.append("scheduled")):
+        for loaded in (True, False):
+            remove = entry.add_update_listener(listener) if loaded else None
+            rf = SmartHeatingConfigFlow()
+            rf.hass, rf.handler, rf.flow_id = hass, "smart_heating", f"rc{loaded}"
+            rf.context = {"source": "reconfigure", "entry_id": entry.entry_id}
+            assert (await rf.async_step_reconfigure())["step_id"] == "type"
+            rf._data["weather"] = f"weather.home_{loaded}"  # a change, so the update listener runs
+            r = await rf._finish_house()
+            assert r["type"] == "abort" and r["reason"] == "reconfigure_successful" and not r.get("translation_domain"), r
+            await hass.async_block_till_done()
+            if remove:
+                remove()
+        sf = RoomSubentryFlow()
+        sf.hass, sf.handler, sf.flow_id = hass, (entry.entry_id, "room"), "rs1"
+        sf.context = {"source": "reconfigure", "subentry_id": "cafe"}
+        assert (await sf.async_step_reconfigure())["type"] == "form"
+        keep = {k: v for k, v in entry.subentries["cafe"].data.items() if k not in ("area_id", "name")}
+        r = await sf.async_step_reconfigure(keep)
+        assert r["type"] == "abort" and r["reason"] == "reconfigure_successful" and not r.get("translation_domain"), r
+    logging.getLogger().removeHandler(catch)
+    assert reloads == ["listener", "scheduled"], reloads
+    assert not [m for m in reported if "update listener" in m], reported
+    print("reconfigure ok: house and room saved with our message, one reload each")
+
     await c.async_stop(); await hass.async_stop()
     print("ELECTRIC OK")
 

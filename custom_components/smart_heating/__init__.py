@@ -2,10 +2,7 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
-from homeassistant.components.frontend import add_extra_js_url
-from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 import voluptuous as vol
 
@@ -14,27 +11,14 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, PLATFORMS, SERVICE_HEAT_TEST, SERVICE_ONE_CYCLE, SERVICE_RELEARN, SERVICE_START_CONTROL, STORE_VERSION, VERSION
+from .card import async_register_card, async_remove_card
+from .const import DOMAIN, PLATFORMS, SERVICE_HEAT_TEST, SERVICE_ONE_CYCLE, SERVICE_RELEARN, SERVICE_START_CONTROL, STORE_VERSION
 from .core import Mode
 from .coordinator import HeatingCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-CARD_URL = f"/{DOMAIN}/smart-heating-card.js"
-CARD_FILE = Path(__file__).parent / "frontend" / "smart-heating-card.js"
 
 type SmartHeatingConfigEntry = ConfigEntry[HeatingCoordinator]
-
-
-async def _async_register_card(hass: HomeAssistant) -> None:
-    """Serve the dashboard card from the integration and load it on every dashboard."""
-    if hass.data.get(f"{DOMAIN}_card"):
-        return
-    hass.data[f"{DOMAIN}_card"] = True
-    try:
-        await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(CARD_FILE), True)])
-        add_extra_js_url(hass, f"{CARD_URL}?v={VERSION}")
-    except Exception as err:  # noqa: BLE001
-        _LOGGER.warning("Could not register the Smart Heating card automatically: %s", err)
 
 
 def _coordinators(hass: HomeAssistant) -> list[HeatingCoordinator]:
@@ -77,7 +61,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: SmartHeatingConfigEntry) -> bool:
-    await _async_register_card(hass)
+    await async_register_card(hass)
     _async_register_services(hass)
     coordinator = HeatingCoordinator(hass, entry)
     await coordinator.async_start()
@@ -97,6 +81,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: SmartHeatingConfigEntry
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Deleting Smart Heating also deletes what it learned, so a new setup starts clean."""
     await Store(hass, STORE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
+    if not any(e.entry_id != entry.entry_id for e in hass.config_entries.async_entries(DOMAIN)):
+        await async_remove_card(hass)
 
 
 async def _async_reload(hass: HomeAssistant, entry: SmartHeatingConfigEntry) -> None:
