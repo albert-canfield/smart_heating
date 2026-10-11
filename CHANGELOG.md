@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.3
+- Fixes the real cause of the card's "Custom element doesn't exist: smart-heating-card". Home Assistant's app loads a polyfill that replaces the browser's custom element registry with its own, which only knows elements defined through it. The card's script loads at the same time as the app; when it ran first (often on a reload, with everything cached), the card was defined in the browser's registry and Home Assistant never found it, so even rebuilding it (0.14.2) failed. The card now notices the swap and registers itself with Home Assistant's registry too, and Home Assistant swaps the real card in.
+- The self-repair from 0.14.2 waits until Home Assistant can find the card, and also runs when an older copy of the card (a cached page) loaded first.
+
 ## 0.14.2
 - Fixes the card still showing "Custom element doesn't exist: smart-heating-card" now and then, mostly after a reload. The dashboard and the card's script load at the same time; when the dashboard builds the card first, Home Assistant swaps the real card in once the script has run, but not when the card sits inside some custom cards (stacks, expanders, swipe cards). The card now finds such leftovers and rebuilds them itself, including ones shown later (a folded section opening). The browser console says when it did, and inside which card.
 

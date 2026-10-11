@@ -10,7 +10,7 @@
  *   hide_title: false     # optional
  */
 
-const CARD_VERSION = "0.14.2";  // keep in step with const.py VERSION (tests/test_card.py checks)
+const CARD_VERSION = "0.14.3";  // keep in step with const.py VERSION (tests/test_card.py checks)
 
 const STATE_LABEL = {
   approved: "Heating",
@@ -1518,24 +1518,49 @@ const STYLE = `<style>
 </style>`;
 
 SmartHeatingCard.version = CARD_VERSION;
-const running = customElements.get("smart-heating-card");
+const TAG = "smart-heating-card";
+const running = customElements.get(TAG);
 if (!running) {
-  customElements.define("smart-heating-card", SmartHeatingCard);
+  customElements.define(TAG, SmartHeatingCard);
   console.info(`%c Smart Heating %c ${CARD_VERSION} `,
     "color:#fff;background:#FF6B3D;font-weight:700;padding:2px 4px;border-radius:4px 0 0 4px",
     "color:#fff;background:#101826;font-weight:700;padding:2px 4px;border-radius:0 4px 4px 0");
-  healLeftovers();
 } else if (running.version !== CARD_VERSION) {
   console.warn(`Smart Heating card ${running.version || "(older)"} is running, ${CARD_VERSION} arrived late: refresh the page`);
 }
+const repair = healLeftovers();  // also when an older copy (a cached page) defined the card first
+followRegistry(repair);
 
-/* The dashboard and this script load at the same time. A card built before this script ran shows
-   "Custom element doesn't exist: smart-heating-card"; Home Assistant swaps the real card in once it is
-   defined, but only where its own card holder (hui-card) holds it directly: inside some custom cards the
-   error stays. So find such leftovers and rebuild the card holder around them, now, a few times while
-   the page settles, and when one is attached later (a folded section opening). At most 10 per page. */
+/* Home Assistant's app loads a scoped custom element registry polyfill that replaces window.customElements
+   with a registry that only knows what is defined through it. This script loads at the same time as the
+   app, and when it runs first (a reload with everything cached) the card is defined in the browser's own
+   registry: Home Assistant's lookups never find it and every card shows "Custom element doesn't exist".
+   So watch for the swap (the first 30 s) and define the card in the new registry as well. */
+function followRegistry(repair) {
+  let seen = window.customElements;
+  const own = seen.get(TAG) || SmartHeatingCard;  // the class the browser builds this card with
+  const started = Date.now();
+  const timer = setInterval(() => {
+    const reg = window.customElements;
+    if (reg !== seen) {
+      seen = reg;
+      try {
+        if (!reg.get(TAG)) reg.define(TAG, own);  // resolves Home Assistant's pending whenDefined: it rebuilds
+      } catch (e) {
+        console.warn("Smart Heating: could not register the card with Home Assistant's registry", e);
+      }
+      repair();
+    }
+    if (Date.now() - started > 30000) clearInterval(timer);
+  }, 25);
+}
+
+/* A card built before Home Assistant could find this card shows "Custom element doesn't exist:
+   smart-heating-card". Home Assistant swaps the real card in once it is defined, but only where its own
+   card holder (hui-card) holds it directly: inside some custom cards the error stays. So find leftovers
+   and rebuild the card holder around them, a few times while the page settles. At most 10 per page.
+   Returns a function that sweeps again now (after the registry swap). */
 function healLeftovers() {
-  const TAG = "smart-heating-card";
   let left = 10;
   const ours = (el) => el.localName === "hui-error-card" && String(el._config?.message || el._config?.error || "").includes(TAG);
   const find = (root, out) => {
@@ -1552,14 +1577,14 @@ function healLeftovers() {
     return null;
   };
   const heal = (err) => {
-    if (left <= 0 || !err.isConnected) return;
+    if (left <= 0 || !err.isConnected || !window.customElements.get(TAG)) return;  // rebuilding before it is found fails again
     left -= 1;
     const h = holder(err);
-    const inside = h?.config?.type && h.config.type !== `custom:${TAG}` ? ` (inside ${h.config.type})` : "";
+    const where = !h ? " (no card holder)" : h.config?.type && h.config.type !== `custom:${TAG}` ? ` (inside ${h.config.type})` : "";
     try {
-      if (h) h.load();  // rebuilds what the holder holds, now that the card is defined
+      if (h) h.load();  // rebuilds what the holder holds, now that the card can be found
       else err.dispatchEvent(new Event("ll-rebuild", { bubbles: true, composed: true }));
-      console.info(`Smart Heating: rebuilt a card shown before its script ran${inside}`);
+      console.info(`Smart Heating: rebuilt a card shown before its script ran${where}`);
     } catch (e) {
       console.warn("Smart Heating: could not rebuild a card", e);
     }
@@ -1569,17 +1594,8 @@ function healLeftovers() {
       find(document, []).forEach(heal);
     } catch (e) { /* never break the page */ }
   };
-  [0, 1000, 3000, 10000].forEach((ms) => setTimeout(sweep, ms));
-  customElements.whenDefined("hui-error-card").then(() => {
-    const proto = customElements.get("hui-error-card")?.prototype;
-    if (!proto || proto.__smartHeatingHeal) return;
-    const base = proto.connectedCallback;
-    proto.__smartHeatingHeal = true;
-    proto.connectedCallback = function () {
-      base?.call(this);
-      if (left > 0 && ours(this)) setTimeout(() => heal(this), 0);
-    };
-  }).catch(() => {});
+  [0, 500, 1000, 2000, 3000, 5000, 10000, 20000].forEach((ms) => setTimeout(sweep, ms));
+  return () => setTimeout(sweep, 0);
 }
 
 window.customCards = window.customCards || [];

@@ -77,7 +77,7 @@ Smart Heating heats from day one with sensible defaults and learns your home in 
 
 # Documentation
 
-Version 0.14.2. How it starts:
+Version 0.14.3. How it starts:
 
 1. **Heating from day one** (or **Watching** if you picked *Watch first*: it decides and logs, never touches the boiler or TRVs, until you tap **Start heating** and confirm).
 2. **Learning in the background**: each room's heat-loss time constant, free-heat gain and warm-up rate, from normal life. Heating decisions don't wait for it.
@@ -189,7 +189,7 @@ Other fallbacks:
 
 Brand icon and logo ship in `brand/` (shown by Home Assistant 2026.3 and later).
 
-The dashboard card ships inside the integration, so one HACS install covers both. On each start Smart Heating copies the card to `www/smart_heating/` (with a gzipped copy, about a quarter of the size) and keeps one dashboard resource pointing at it, updated to the new version after each update. The card then loads even on pages opened while Home Assistant is still starting. If dashboard resources are kept in YAML, add `/local/smart_heating/smart-heating-card.js` (type module) yourself; the card also loads without it once Home Assistant has started. The browser console shows **Smart Heating 0.14.2** when the card loads. After an update, a normal browser refresh picks up the new card.
+The dashboard card ships inside the integration, so one HACS install covers both. On each start Smart Heating copies the card to `www/smart_heating/` (with a gzipped copy, about a quarter of the size) and keeps one dashboard resource pointing at it, updated to the new version after each update. The card then loads even on pages opened while Home Assistant is still starting. If dashboard resources are kept in YAML, add `/local/smart_heating/smart-heating-card.js` (type module) yourself; the card also loads without it once Home Assistant has started. The browser console shows **Smart Heating 0.14.3** when the card loads. After an update, a normal browser refresh picks up the new card.
 
 ## Set up
 
