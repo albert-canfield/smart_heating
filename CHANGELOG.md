@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.14.2
+- Fixes the card still showing "Custom element doesn't exist: smart-heating-card" now and then, mostly after a reload. The dashboard and the card's script load at the same time; when the dashboard builds the card first, Home Assistant swaps the real card in once the script has run, but not when the card sits inside some custom cards (stacks, expanders, swipe cards). The card now finds such leftovers and rebuilds them itself, including ones shown later (a folded section opening). The browser console says when it did, and inside which card.
+
 ## 0.14.1
 - The card loads more reliably. It could show "Configuration error" on a page opened while Home Assistant was still starting: Home Assistant serves dashboards before custom integrations have started, and a page only picks up an integration's card script when it loads, so such a page never got the card. The card is now copied to `www/smart_heating/` (served from the start) and kept as a dashboard resource that every dashboard loads, updated automatically after each update. Still one HACS install.
 - The card is sent gzipped (24 KB instead of 95 KB) to browsers that accept it.
