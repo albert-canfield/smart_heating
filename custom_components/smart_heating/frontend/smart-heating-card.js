@@ -10,7 +10,7 @@
  *   hide_title: false     # optional
  */
 
-const CARD_VERSION = "0.14.3";  // keep in step with const.py VERSION (tests/test_card.py checks)
+const CARD_VERSION = "0.15.0";  // keep in step with const.py VERSION (tests/test_card.py checks)
 
 const STATE_LABEL = {
   approved: "Heating",
@@ -74,6 +74,7 @@ const SPIN = '<svg class="spin" viewBox="0 0 24 24" aria-hidden="true"><circle c
 const ICON_PERSON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="3.6"/><path d="M4.8 20.5c0-4 3.2-7 7.2-7s7.2 3 7.2 7z"/></svg>';
 const ICON_BOLT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4.5 13.5H11L10 22l8.5-11.5H12z"/></svg>';
 const ICON_WINDOW = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="1.5"/><path d="M12 3.5v17M5 12h14"/></svg>';
+const ICON_WIN_OPEN = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="17" rx="1.2"/><path d="M12.5 3.5l8 3v11l-8 3"/></svg>';
 const ICON_CLOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>';
 const ICON_DOOR = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21h16"/><path d="M6 21V3h9v18"/><path d="M15 3.5l4 2V20l-4 1"/><circle cx="12.5" cy="12.5" r=".6"/></svg>';
 const ICON_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
@@ -127,6 +128,8 @@ class SmartHeatingCard extends HTMLElement {
     this._aboutOpen = new Set();  // rooms whose "Room profile" is unfolded
     this._tip = null;
     this._energyOpen = false;
+    this._hourly = null;  // today's heating kWh per hour, fetched while the breakdown is open
+    this._hourlyAt = 0;
     this._pending = {};
     this._timers = {};
     this._confirmStart = false;
@@ -166,6 +169,7 @@ class SmartHeatingCard extends HTMLElement {
     this._hass = hass;
     const model = this._model();
     const sig = JSON.stringify(model);
+    if (this._energyOpen) queueMicrotask(() => this._fetchHourly());  // after the model below is in place
     if (sig === this._sig) return;
     this._sig = sig;
     this._data = model;
@@ -308,7 +312,7 @@ class SmartHeatingCard extends HTMLElement {
       cal: house.cal?.attributes || {},
       win: house.windows && house.windows.state !== "none" && house.windows.state !== "unavailable"
         ? { action: house.windows.state, reason: house.windows.attributes.reason, minutes: house.windows.attributes.minutes,
-            advice: house.windows.attributes.advice } : null,
+            advice: house.windows.attributes.advice, rooms: house.windows.attributes.rooms || [] } : null,
       calAvailable: house.cal ? house.cal.attributes.available !== false : false,
       heatTest: house.cal?.attributes.heat_test_min_left ?? null,
       target: num(house.target?.state),
@@ -590,7 +594,7 @@ class SmartHeatingCard extends HTMLElement {
           <p>${esc(d.reason || "")}</p>
           <button class="logbtn" data-log aria-expanded="${this._showLog}">${this._showLog ? "Hide log" : "Show log"}</button>
         </footer>
-        ${this._energyOpen ? energyBreakdown(d) : ""}
+        ${this._energyOpen ? energyBreakdown(d, this._hourly) : ""}
         ${this._showLog ? this._logPanel(d.log) : ""}
       </ha-card>`;
 
@@ -655,7 +659,7 @@ class SmartHeatingCard extends HTMLElement {
             </dl>
             <button class="logbtn" data-log aria-expanded="${this._showLog}">${this._showLog ? "Hide log" : "Log"}</button>
           </footer>
-          ${this._energyOpen ? energyBreakdown(d) : ""}
+          ${this._energyOpen ? energyBreakdown(d, this._hourly) : ""}
           ${this._showLog ? this._logPanel(d.log) : ""}
         </div>` : ""}
       </ha-card>`;
@@ -720,6 +724,7 @@ class SmartHeatingCard extends HTMLElement {
     root.querySelectorAll("[data-energy]").forEach((b) => b.addEventListener("click", (e) => {
       e.stopPropagation();
       this._energyOpen = !this._energyOpen;
+      this._fetchHourly();
       this._render();
     }));
     root.querySelectorAll("[data-oc]").forEach((b) => b.addEventListener("click", () => {
@@ -782,6 +787,7 @@ class SmartHeatingCard extends HTMLElement {
       <button class="chip v-${state} ${r.hasTrv || r.hasHeater ? "" : "dumb"}" data-room="${esc(r.name)}"
         aria-expanded="${this._open === r.name}" aria-label="${esc(r.name)}, ${r.temp == null ? "no reading" : r.temp.toFixed(1) + " degrees"}, ${esc(label)}"
         title="${esc(r.name)}: ${esc(r.reason)}">
+        ${this._adviceIcon(r)}
         ${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}
         ${r.heaterOn ? `<span class="bolt" aria-label="heater on">${ICON_BOLT}</span>` : ""}
         ${this._openIcon(r)}
@@ -791,6 +797,47 @@ class SmartHeatingCard extends HTMLElement {
   }
 
   // A small door or window icon while one to outside is open, or while the room recovers after it closed.
+  /* Today's heating energy per hour, from Home Assistant's 5-minute statistics of the gas and electricity
+     sensors (they keep statistics anyway). Fetched when the breakdown opens, then at most every 5 min while
+     it stays open; a failure (no recorder) just leaves the chart out. */
+  _fetchHourly() {
+    const d = this._data, hass = this._hass;
+    if (!this._energyOpen || !d || !hass?.callWS || this._hourlyBusy) return;
+    const gasId = d.gas != null ? d.gasEntity : null, elecId = d.elec != null ? d.elecEntity : null;
+    const ids = [gasId, elecId].filter(Boolean);
+    const day = new Date().toDateString();
+    if (!ids.length || (this._hourly?.day === day && Date.now() - this._hourlyAt < 300000)) return;
+    this._hourlyBusy = true;
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    hass.callWS({ type: "recorder/statistics_during_period", start_time: start.toISOString(), statistic_ids: ids,
+      period: "5minute", types: ["change"] })
+      .then((stats) => {
+        const perHour = (id) => {
+          if (!id || !stats?.[id]) return null;
+          const out = Array(24).fill(0);
+          for (const p of stats[id]) {
+            const t = typeof p.start === "number" ? p.start : Date.parse(p.start);
+            if (p.change != null && !Number.isNaN(t)) out[new Date(t).getHours()] += p.change;
+          }
+          return out.map((v) => Math.max(0, v));
+        };
+        this._hourly = { day, gas: perHour(gasId), elec: perHour(elecId) };
+        this._render();
+      })
+      .catch(() => { this._hourly = { day, gas: null, elec: null }; this._render(); })
+      .finally(() => { this._hourlyAt = Date.now(); this._hourlyBusy = false; });
+  }
+
+  // A tiny window icon in front of a room the window advice names: open them, or close them.
+  _adviceIcon(r) {
+    const w = this._data?.win;
+    if (!w || !w.rooms.includes(r.name)) return "";
+    const open = w.action === "open";
+    const text = w.reason || (open ? "Open the windows here" : "Close the windows here");
+    return `<span class="wadv ${open ? "open" : "close"}" title="${esc(text)}" role="img" aria-label="${esc(text)}">${open ? ICON_WIN_OPEN : ICON_WINDOW}</span>`;
+  }
+
   _openingText(r) {
     const mins = (iso, sign) => Math.max(1, Math.round(sign * (Date.now() - new Date(iso).getTime()) / 60000));
     if (r.opening) return `${r.openingName || (r.opening === "window" ? "Window" : "Door")} open ${mins(r.openSince, 1)} min: heating paused`;
@@ -814,7 +861,7 @@ class SmartHeatingCard extends HTMLElement {
       <button class="room v-${state} ${r.hasTrv || r.hasHeater ? "" : "dumb"}" data-room="${esc(r.name)}"
         aria-expanded="${this._open === r.name}"
         title="${esc(r.reason)}">
-        <span class="name">${esc(r.name)}${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}${this._openIcon(r)}</span>
+        <span class="name">${this._adviceIcon(r)}${esc(r.name)}${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}${this._openIcon(r)}</span>
         <span class="temp">${r.temp == null ? "–" : `${r.temp.toFixed(1)}°`}<small>${trend}</small></span>
         <span class="meta">${esc(label)}${r.target != null ? `<span class="target">to ${Number(r.target).toFixed(1)}°</span>` : ""}</span>
       </button>`;
@@ -1047,8 +1094,42 @@ function energySummary(d, open) {
     + `${info}</dd></div>`;
 }
 
+// Heating energy per hour today, one line per fuel the house has: when in the day it went.
+function hourlyChart(d, hourly) {
+  const today = new Date();
+  if (!hourly || hourly.day !== today.toDateString()) return `<div class="hchart wait" aria-hidden="true"></div>`;
+  const lines = [
+    d.gas != null && hourly.gas && { cls: "g", label: "Gas", vals: hourly.gas },
+    d.elec != null && hourly.elec && { cls: "e", label: "Electricity", vals: hourly.elec },
+  ].filter(Boolean);
+  if (!lines.length) return "";
+  const cur = today.getHours(), W = 240, H = 44;
+  const peak = Math.max(0, ...lines.flatMap((l) => l.vals.slice(0, cur + 1)));
+  const top = [0.2, 0.5, 1, 1.5, 2, 3, 4, 5, 8, 10, 15, 20, 30, 50].find((s) => peak <= s) || Math.ceil(peak / 10) * 10;
+  const x = (h) => (((h + 0.5) / 24) * W).toFixed(1), y = (v) => (H - 1 - (v / top) * (H - 3)).toFixed(1);
+  const line = (vals) => vals.slice(0, cur + 1).map((v, h) => `${h ? "L" : "M"}${x(h)} ${y(v)}`).join("");
+  const kwh = (v) => `${v < 0.05 ? "0" : v.toFixed(1)} kWh`;
+  const hh = (h) => `${String(h).padStart(2, "0")}:00`;
+  const tips = lines.length ? Array.from({ length: cur + 1 }, (_, h) =>
+    `<rect x="${((h / 24) * W).toFixed(1)}" y="0" width="${(W / 24).toFixed(2)}" height="${H}"><title>${hh(h)} to ${hh(h + 1)}: ${
+      lines.map((l) => `${l.label.toLowerCase()} ${kwh(l.vals[h])}`).join(", ")}</title></rect>`).join("") : "";
+  const at = lines.flatMap((l) => l.vals.slice(0, cur + 1).map((v, h) => [v, h])).reduce((a, b) => (b[0] > a[0] ? b : a), [0, 0]);
+  const label = peak > 0 ? `Heating energy by hour today, most ${kwh(at[0])} from ${hh(at[1])}` : "No heating energy used yet today";
+  return `<div class="hchart">
+    <div class="hhead"><span>Heating by hour</span>${lines.length > 1 ? `<span class="hkey">${lines.map((l) => `<span><i class="${l.cls}"></i>${l.label}</span>`).join("")}</span>` : ""}</div>
+    <div class="hplot"><span class="htop">${top} kWh</span>
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(label)}">
+        <path class="grid" d="M0 ${y(top)}H${W}M0 ${H - 0.5}H${W}${[6, 12, 18].map((h) => `M${(h / 24) * W} 0V${H}`).join("")}"/>
+        ${lines.map((l) => `<path class="a ${l.cls}" d="${line(l.vals)}L${x(cur)} ${H}L${x(0)} ${H}Z"/><path class="l ${l.cls}" d="${line(l.vals)}"/>`).join("")}
+        <path class="now" d="M${(((cur + today.getMinutes() / 60) / 24) * W).toFixed(1)} 0V${H}"/>
+        <g class="tips">${tips}</g>
+      </svg></div>
+    <div class="hx"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
+  </div>`;
+}
+
 // The breakdown behind the (i): heating rows count; hot water, hob and other are shown greyed and don't.
-function energyBreakdown(d) {
+function energyBreakdown(d, hourly) {
   const hrs = (v) => (v == null ? "" : ` <small>${Number(v).toFixed(1)} h</small>`);
   const kwh = (v) => (v == null ? "–" : `${Number(v).toFixed(1)} kWh`);
   const gbp = (v) => (v == null ? "–" : money(v, d.currency));
@@ -1072,7 +1153,7 @@ function energyBreakdown(d) {
   // One fuel: its subtotal is already the heating cost. Hybrid: add them up.
   const total = d.gas != null && d.elec != null
     ? `<p class="etotal"><span>Heating cost today</span><b>${money((d.cost || 0) + (d.elecCost || 0), d.currency)}</b></p>` : "";
-  return `<div class="ebreak" role="region" aria-label="Where the energy went">${parts.join("")}${total}</div>`;
+  return `<div class="ebreak" role="region" aria-label="Where the energy went">${hourlyChart(d, hourly)}${parts.join("")}${total}</div>`;
 }
 
 // Time left until an ISO moment, as m:ss.
@@ -1091,6 +1172,7 @@ const STYLE = `<style>
   :host {
     --sh-heat: #e07a2f;
     --sh-heat-soft: rgba(224, 122, 47, 0.12);
+    --sh-elec: #4a90e2;
     --sh-top: #f0a868;
     --sh-coast: #b9925a;
     --sh-off: var(--disabled-text-color, #9e9e9e);
@@ -1134,6 +1216,11 @@ const STYLE = `<style>
   .opn.on { color: var(--warning-color, #f5a524); }
   .opn svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .room .name .opn { margin-left: 5px; vertical-align: -1px; }
+  .wadv { display: inline-flex; flex: none; width: 12px; height: 12px; }
+  .wadv svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .wadv.open { color: var(--primary-color); }
+  .wadv.close { color: var(--warning-color, #b26a00); }
+  .room .name .wadv { margin-right: 5px; vertical-align: -1px; }
   .inuse { display: inline-flex; flex: none; width: 11px; height: 11px; color: var(--secondary-text-color); }
   .inuse svg { width: 100%; height: 100%; fill: currentColor; }
   .room .name .inuse { margin-left: 5px; vertical-align: -1px; }
@@ -1187,6 +1274,24 @@ const STYLE = `<style>
   .ebreak li small { color: var(--sh-muted); font-size: .75rem; }
   .ebreak li.esub { border-top: 1px solid var(--divider-color); margin-top: 3px; padding-top: 5px; font-weight: 500; }
   .ebreak .etotal b { font-size: .8125rem; }
+  .hchart { margin: 0 0 10px; }
+  .hchart.wait { height: 78px; }
+  .hhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 2px 0 6px;
+           font-size: .6875rem; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--sh-muted); }
+  .hkey { display: inline-flex; gap: 10px; font-size: .6875rem; font-weight: 400; letter-spacing: 0; text-transform: none; }
+  .hkey i { display: inline-block; width: 10px; height: 2px; border-radius: 1px; margin-right: 4px; vertical-align: middle; }
+  .hkey i.g { background: var(--sh-heat); } .hkey i.e { background: var(--sh-elec); }
+  .hplot { position: relative; }
+  .hplot svg { display: block; width: 100%; height: 48px; overflow: visible; }
+  .hplot .grid { fill: none; stroke: var(--divider-color); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .hplot .l { fill: none; stroke-width: 1.75; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+  .hplot .a { stroke: none; opacity: .14; }
+  .hplot .l.g { stroke: var(--sh-heat); } .hplot .a.g { fill: var(--sh-heat); }
+  .hplot .l.e { stroke: var(--sh-elec); } .hplot .a.e { fill: var(--sh-elec); }
+  .hplot .now { stroke: var(--sh-muted); stroke-width: 1; stroke-dasharray: 2 3; vector-effect: non-scaling-stroke; opacity: .8; }
+  .hplot .tips rect { fill: transparent; }
+  .htop { position: absolute; top: -1px; left: 2px; font-size: .625rem; line-height: 1; color: var(--sh-muted); }
+  .hx { display: flex; justify-content: space-between; margin-top: 3px; font-size: .625rem; color: var(--sh-muted); font-variant-numeric: tabular-nums; }
   .ebreak .ehead { margin: 2px 0 3px; font-size: .6875rem; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--sh-muted); }
   .ebreak .etotal { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0 6px; padding-top: 7px; border-top: 1px solid var(--divider-color); font-size: .875rem; }
   footer [data-more]:hover dd, footer [data-more]:focus-visible dd { color: var(--primary-color); }

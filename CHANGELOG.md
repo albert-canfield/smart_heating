@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.15.0
+- **Heating by hour**: the breakdown behind the (i) opens with a small chart of today's heating energy per hour, one line per fuel the house has (gas, electricity), so you can see when in the day the heating used it. It reads Home Assistant's own statistics of the gas and electricity sensors, so it covers the whole day, also after a restart. Hover an hour for its kWh; a dashed line marks now.
+- **Window advice on the rooms**: the rooms the window advice is about get a tiny window icon in front of their name, open (blue) or closed (amber), with the advice on hover. The chip at the top is unchanged.
+- README: an animated cover with a short tour of the card (rooms, a room panel, heating by hour, window advice).
+
 ## 0.14.3
 - Fixes the real cause of the card's "Custom element doesn't exist: smart-heating-card". Home Assistant's app loads a polyfill that replaces the browser's custom element registry with its own, which only knows elements defined through it. The card's script loads at the same time as the app; when it ran first (often on a reload, with everything cached), the card was defined in the browser's registry and Home Assistant never found it, so even rebuilding it (0.14.2) failed. The card now notices the swap and registers itself with Home Assistant's registry too, and Home Assistant swaps the real card in.
 - The self-repair from 0.14.2 waits until Home Assistant can find the card, and also runs when an older copy of the card (a cached page) loaded first.
