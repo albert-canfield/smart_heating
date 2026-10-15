@@ -10,7 +10,7 @@
  *   hide_title: false     # optional
  */
 
-const CARD_VERSION = "0.15.0";  // keep in step with const.py VERSION (tests/test_card.py checks)
+const CARD_VERSION = "0.15.1";  // keep in step with const.py VERSION (tests/test_card.py checks)
 
 const STATE_LABEL = {
   approved: "Heating",

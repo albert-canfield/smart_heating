@@ -107,6 +107,7 @@ from .const import (
     SAVE_DELAY_S,
     STORE_VERSION,
     CONF_PRESENCE,
+    CONF_NO_OPENINGS,
     CONF_OPENINGS,
     CONF_PRIORITY,
     CONF_SCHEDULE,
@@ -199,6 +200,7 @@ class Room:
     alerted: dict = field(default_factory=dict)  # block kind -> last phone alert
     no_temp_since: datetime | None = None
     openings: list[str] = field(default_factory=list)  # contact sensors on doors and windows to outside
+    no_openings: bool = False  # no window or door to outside: no opening pause, left out of window advice
     open_since: datetime | None = None
     open_entity: str | None = None
     opening: str | None = None  # "door"/"window" while control pauses the room (open a minute or more)
@@ -283,7 +285,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 humidity_entity=d.get(CONF_HUMIDITY),
                 trvs=list(d.get(CONF_TRVS, [])),
                 presence=list(d.get(CONF_PRESENCE, [])),
-                openings=list(d.get(CONF_OPENINGS, [])),
+                openings=[] if d.get(CONF_NO_OPENINGS) else list(d.get(CONF_OPENINGS, [])),
+                no_openings=bool(d.get(CONF_NO_OPENINGS)),
                 media=list(d.get(CONF_MEDIA, [])),
                 lights=list(d.get(CONF_LIGHTS, [])),
                 schedule=d.get(CONF_SCHEDULE),
@@ -1300,11 +1303,13 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             rh_out = _attr_float(wa, "humidity")
         td_out = dew_point(tout, rh_out) if rh_out is not None else _attr_float(wa, "dew_point")
         out = Outside(tout, td_out, weather.state if weather else None, _wind_kmh(wa))
-        rooms = [RoomAir(r.cfg.name, self.room_temp(r), self._float(r.humidity_entity)) for r in self.rooms.values()]
+        every = [RoomAir(r.cfg.name, self.room_temp(r), self._float(r.humidity_entity)) for r in self.rooms.values()]
+        # A room with no window or door to outside is never told to open or close one.
+        rooms = [a for a, r in zip(every, self.rooms.values()) if not r.no_openings]
         self.window_info = {
             "outdoor_humidity": rh_out, "outdoor_dew_point": td_out, "weather": out.condition, "wind_kmh": out.wind_kmh,
-            "humidity": {r.name: r.rh for r in rooms if r.rh is not None},
-            "dew_points": {r.name: r.dew_point for r in rooms if r.dew_point is not None},
+            "humidity": {r.name: r.rh for r in every if r.rh is not None},
+            "dew_points": {r.name: r.dew_point for r in every if r.dew_point is not None},
         }
         # Radiators getting heat (hot-water-only burns don't count); without boiler state, what the plan asks for.
         radiators = self._radiators_heating(now)[0] if self.has_boiler_state else plan.boiler_on

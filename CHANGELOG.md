@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.1
+- New room setting **This room has no window or door to outside**, just above the door and window sensors. Tick it for a room like an inner bathroom: it is left out of window advice (no "open the windows" or "close" for it, no alert, no window icon on its chip), and its door and window sensors are ignored and cleared when you save, so it never pauses for one. Its humidity still shows in diagnostics.
+
 ## 0.15.0
 - **Heating by hour**: the breakdown behind the (i) opens with a small chart of today's heating energy per hour, one line per fuel the house has (gas, electricity), so you can see when in the day the heating used it. It reads Home Assistant's own statistics of the gas and electricity sensors, so it covers the whole day, also after a restart. Hover an hour for its kWh; a dashed line marks now.
 - **Window advice on the rooms**: the rooms the window advice is about get a tiny window icon in front of their name, open (blue) or closed (amber), with the advice on hover. The chip at the top is unchanged.

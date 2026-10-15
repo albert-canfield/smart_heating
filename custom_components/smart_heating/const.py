@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.15.0"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.15.1"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -65,6 +65,7 @@ CONF_HUMIDITY = "humidity_sensor"
 CONF_TRVS = "trvs"
 CONF_PRESENCE = "presence"
 CONF_OPENINGS = "openings"  # contact sensors on doors and windows to outside
+CONF_NO_OPENINGS = "no_openings"  # no window or door to outside (an inner bathroom): no window advice
 CONF_MEDIA = "media"
 CONF_LIGHTS = "lights"
 CONF_SCHEDULE = "schedule"

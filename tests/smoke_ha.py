@@ -506,9 +506,15 @@ async def main() -> None:
     hass.states.async_set("sensor.bed_rh", "80")
     hass.states.async_set("weather.home", "rainy", {"humidity": 95, "temperature": 7.0, "wind_speed": 5, "wind_speed_unit": "m/s"})
     hass.states.async_set("switch.heating", "off")
+    from custom_components.smart_heating.sensor import WindowAdviceSensor
+    c.rooms["bed"].no_openings = True  # no window or door to outside: never told to open one
     await c.async_refresh()
     await hass.async_block_till_done()
-    from custom_components.smart_heating.sensor import WindowAdviceSensor
+    assert WindowAdviceSensor(c).native_value == "none" and not pushes, (WindowAdviceSensor(c).native_value, pushes)
+    assert "Bedroom" in c.window_info["humidity"], "diagnostics still show its humidity"
+    c.rooms["bed"].no_openings = False
+    await c.async_refresh()
+    await hass.async_block_till_done()
     wa = WindowAdviceSensor(c).extra_state_attributes
     print("window advice:", WindowAdviceSensor(c).native_value, "|", wa["reason"], "| pushed to:", [w for w, _ in pushes])
     assert WindowAdviceSensor(c).native_value == "open" and wa["advice"] == "dry" and wa["rooms"] == ["Bedroom"], wa

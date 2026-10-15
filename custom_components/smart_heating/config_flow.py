@@ -87,6 +87,7 @@ from .const import (
     DEFAULT_NIGHT_START,
     DEFAULT_NIGHT_END,
     CONF_PRESENCE,
+    CONF_NO_OPENINGS,
     CONF_OPENINGS,
     CONF_PRIORITY,
     CONF_SCHEDULE,
@@ -651,12 +652,20 @@ def _room_schema(data: dict[str, Any], need_floor: bool = False, heating_type: s
             **heat,
             _opt(CONF_HUMIDITY, data): _ent("sensor", device_class="humidity"),
             _opt(CONF_PRESENCE, data): _ent("binary_sensor", multiple=True),
+            vol.Optional(CONF_NO_OPENINGS, default=bool(data.get(CONF_NO_OPENINGS, False))): sel.BooleanSelector(),
             _opt(CONF_OPENINGS, data): _ent("binary_sensor", multiple=True, device_class=["door", "window", "opening", "garage_door"]),
             _opt(CONF_LIGHTS, data): _ent(["light", "switch"], multiple=True),
             _opt(CONF_MEDIA, data): _ent("media_player", multiple=True),
             _opt(CONF_SCHEDULE, data): _ent(["schedule", "input_boolean"]),
         }
     )
+
+
+def _room_input(user_input: dict[str, Any]) -> dict[str, Any]:
+    """A room with no window or door to outside keeps no opening sensors (forms can't hide the list)."""
+    if user_input.get(CONF_NO_OPENINGS):
+        return {k: v for k, v in user_input.items() if k != CONF_OPENINGS}
+    return user_input
 
 
 def _room_errors(user_input: dict[str, Any]) -> dict[str, str]:
@@ -699,7 +708,7 @@ class RoomSubentryFlow(ConfigSubentryFlow):
         if user_input is not None:
             errors = _room_errors(user_input)
             if not errors:
-                data = {CONF_AREA: area_id, **user_input}
+                data = {CONF_AREA: area_id, **_room_input(user_input)}
                 if CONF_FLOOR in data:
                     data[CONF_FLOOR] = int(data[CONF_FLOOR])
                 return self.async_create_entry(title=name, data=data, unique_id=area_id)
@@ -720,7 +729,7 @@ class RoomSubentryFlow(ConfigSubentryFlow):
         if user_input is not None:
             errors = _room_errors(user_input)
             if not errors:
-                data = {**({CONF_AREA: area_id} if area_id else {CONF_NAME: sub.data.get(CONF_NAME, sub.title)}), **user_input}
+                data = {**({CONF_AREA: area_id} if area_id else {CONF_NAME: sub.data.get(CONF_NAME, sub.title)}), **_room_input(user_input)}
                 if CONF_FLOOR in data:
                     data[CONF_FLOOR] = int(data[CONF_FLOOR])
                 return self.async_update_and_abort(self._get_entry(), sub, title=name, data=data, **_ROOM_SAVED)

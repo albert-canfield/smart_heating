@@ -351,9 +351,14 @@ async def main() -> None:
         sf.hass, sf.handler, sf.flow_id = hass, (entry.entry_id, "room"), "rs1"
         sf.context = {"source": "reconfigure", "subentry_id": "cafe"}
         assert (await sf.async_step_reconfigure())["type"] == "form"
+        form = await sf.async_step_reconfigure()
+        keys = [str(k) for k in form["data_schema"].schema]
+        assert keys.index("no_openings") == keys.index("openings") - 1, "the checkbox sits right above the sensors"
         keep = {k: v for k, v in entry.subentries["cafe"].data.items() if k not in ("area_id", "name")}
-        r = await sf.async_step_reconfigure(keep)
+        r = await sf.async_step_reconfigure({**keep, "no_openings": True, "openings": ["binary_sensor.cafe_window"]})
         assert r["type"] == "abort" and r["reason"] == "reconfigure_successful" and not r.get("translation_domain"), r
+        saved = entry.subentries["cafe"].data
+        assert saved["no_openings"] is True and "openings" not in saved, saved
     logging.getLogger().removeHandler(catch)
     assert reloads == ["listener", "scheduled"], reloads
     assert not [m for m in reported if "update listener" in m], reported
