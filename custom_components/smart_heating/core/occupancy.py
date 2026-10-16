@@ -27,27 +27,21 @@ def is_occupied(
     was_occupied: bool,
     join_min: float = 5.0,
     leave_min: float = 20.0,
-    light_max_min: float = 30.0,
+    light_off_min: float = 30.0,
 ) -> bool:
     """Debounced occupancy.
 
-    Join: presence or media held on for join_min, or a light switched on
-    within light_max_min (a light alone never keeps a room occupied longer).
-    Stay: any presence/media on, or switched off less than leave_min ago.
+    Presence sensors decide; without one the lights do; without either, the card's Heat now (and the schedule).
+    Presence or media: in use once held on for join_min, until leave_min after it goes off.
+    Lights, only in a room with no presence sensor: in use while one is on, and for light_off_min after it goes
+    off (on and straight off counts too). That only once the room was in use: after a restart every light looks
+    freshly switched.
     """
     strong = presence + media
-    if was_occupied:
-        if any(s.is_on for s in strong):
-            return True
-        if any(_recently_off(s, now, leave_min) for s in strong):
-            return True
-        return any(
-            s.is_on and now - s.last_changed < timedelta(minutes=light_max_min)
-            for s in lights
-        )
+    if was_occupied and (any(s.is_on for s in strong) or any(_recently_off(s, now, leave_min) for s in strong)):
+        return True
     if any(_held_on(s, now, join_min) for s in strong):
         return True
-    return any(
-        s.is_on and now - s.last_changed < timedelta(minutes=light_max_min)
-        for s in lights
-    )
+    if presence:
+        return False  # a presence sensor decides on its own: lights don't count
+    return any(s.is_on or (was_occupied and _recently_off(s, now, light_off_min)) for s in lights)

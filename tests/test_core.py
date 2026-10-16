@@ -292,9 +292,29 @@ def test_presence_leave_delay():
     assert not is_occupied(NOW, sig, [], [], was_occupied=True)
 
 
-def test_light_alone_expires():
-    lights = [Signal(True, NOW - timedelta(minutes=45))]
-    assert not is_occupied(NOW, [], [], lights, was_occupied=True)
+def test_presence_sensor_decides_lights_ignored():
+    # A presence sensor decides on its own: a light on in an empty room neither starts nor keeps it in use.
+    gone = [Signal(False, NOW - timedelta(hours=2))]
+    assert not is_occupied(NOW, gone, [], [Signal(True, NOW - timedelta(minutes=45))], was_occupied=True)
+    assert not is_occupied(NOW, gone, [], [Signal(True, NOW - timedelta(minutes=2))], was_occupied=False)
+    here = [Signal(True, NOW - timedelta(minutes=6))]
+    assert is_occupied(NOW, here, [], [], was_occupied=False)
+
+
+def test_light_without_presence_sensor_holds_while_on():
+    on_for_hours = [Signal(True, NOW - timedelta(hours=3))]
+    assert is_occupied(NOW, [], [], on_for_hours, was_occupied=False)
+    assert is_occupied(NOW, [], [], on_for_hours, was_occupied=True)
+
+
+def test_light_without_presence_sensor_then_30_min():
+    off = lambda m: [Signal(False, NOW - timedelta(minutes=m))]  # noqa: E731
+    assert is_occupied(NOW, [], [], off(10), was_occupied=True)  # on and off: still in use
+    assert is_occupied(NOW, [], [], off(29), was_occupied=True)
+    assert not is_occupied(NOW, [], [], off(31), was_occupied=True)
+    assert not is_occupied(NOW, [], [], off(10), was_occupied=False), "a restart makes every light look freshly off"
+    # One light still on, another just off: in use.
+    assert is_occupied(NOW, [], [], off(45) + [Signal(True, NOW - timedelta(minutes=50))], was_occupied=True)
 
 
 def test_trend_rate():

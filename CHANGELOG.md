@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.15.2
+- When a room is in use, in order: a presence sensor decides; with no presence sensor the lights do; with neither, **Heat now** on the card (or a schedule). Media players playing count like presence.
+- Lights (rooms with no presence sensor): the room is in use for as long as a light is on, and for 30 minutes after it goes off (switching one on and straight off counts too). Before, a light only counted for its first 30 minutes and the room emptied as soon as it went off.
+- Rooms with a presence sensor ignore their lights: a light left on in an empty room no longer starts its comfort heating.
+
 ## 0.15.1
 - New room setting **This room has no window or door to outside**, just above the door and window sensors. Tick it for a room like an inner bathroom: it is left out of window advice (no "open the windows" or "close" for it, no alert, no window icon on its chip), and its door and window sensors are ignored and cleared when you save, so it never pauses for one. Its humidity still shows in diagnostics.
 
