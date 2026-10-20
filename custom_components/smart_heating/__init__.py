@@ -64,9 +64,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartHeatingConfigEntry)
     await async_register_card(hass)
     _async_register_services(hass)
     coordinator = HeatingCoordinator(hass, entry)
+    coordinator.restored = False  # no valve or boiler command before mode, enabled and watching only are back
     await coordinator.async_start()
     entry.runtime_data = coordinator
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)  # the entities restore them
+    finally:
+        coordinator.restored = True
+    await coordinator.async_request_refresh()
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True
 

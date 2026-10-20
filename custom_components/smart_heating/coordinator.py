@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections import deque
 from functools import partial
 from dataclasses import dataclass, field, replace
@@ -119,6 +120,8 @@ from .const import (
     OPT_OVERRIDE_HOURS,
     SUBENTRY_ROOM,
     TRV_STAGGER_S,
+    SENSOR_REFRESH_S,
+    SENSOR_STALE_H,
     UPDATE_INTERVAL_S,
     HEAT_TEST_CAP,
     HEAT_TEST_MIN,
@@ -182,7 +185,6 @@ class Room:
     trend: Trend = field(default_factory=Trend)
     occupied: bool = False
     prev_calling: bool = False
-    deferred_since: datetime | None = None
     override: Override = Override.AUTO
     override_until: datetime | None = None
     model: RoomModel = field(default_factory=RoomModel.new)
@@ -305,6 +307,9 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
         self._unsub = None
         self._apply_lock = asyncio.Lock()
+        self._change_due = False  # a refresh for sensor changes is already scheduled
+        self._change_cancel = None
+        self._change_at = 0.0  # monotonic time of the last one
         self._applied_boiler: bool | None = None
 
         # Climate picture.
@@ -387,6 +392,10 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self._setup_checked: datetime | None = None
         self.heat_test: dict[str, Any] | None = None
         # Boiler protection state.
+        # Commands wait until mode, enabled and watching only are restored (async_setup_entry clears this for
+        # the first update and sets it once the entities are set up). True elsewhere, e.g. in tests.
+        self.restored = True
+        self._boiler_failing = False  # the last boiler command failed: logged once, retried each cycle
         self._boiler_cmd_state: bool | None = None
         self._boiler_cmd_at: datetime | None = None
         self._boiler_cmds: list[datetime] = []
@@ -757,13 +766,25 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         if self._unsub:
             self._unsub()
             self._unsub = None
+        if self._change_cancel:
+            self._change_cancel()
+            self._change_cancel, self._change_due = None, False
         for unsub in getattr(self, "_unsub_registry", []):
             unsub()
         await self._store.async_save(self._store_data())
 
     @callback
     def _on_change(self, event: Event[EventStateChangedData]) -> None:
-        self.hass.async_create_task(self.async_request_refresh())
+        """A watched sensor changed: refresh now, or once SENSOR_REFRESH_S after the last one (about 100 sensors
+        report every few seconds between them; your taps on the card refresh at once on their own)."""
+        if self._change_due:
+            return
+        self._change_due = True
+        self._change_cancel = async_call_later(self.hass, max(0.0, SENSOR_REFRESH_S - (time.monotonic() - self._change_at)), self._change_refresh)
+
+    async def _change_refresh(self, _now=None) -> None:
+        self._change_due, self._change_at, self._change_cancel = False, time.monotonic(), None
+        await self.async_request_refresh()
 
     # ---------- user controls ----------
 
@@ -1218,16 +1239,12 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         if self.mode is Mode.ONE_CYCLE:
             self._one_cycle_step(now, plan)
 
-        # Remember state for hysteresis and stack wait.
+        # Remember state for hysteresis.
         for room in self.rooms.values():
             d = plan.rooms.get(room.room_id)
             if d is None:
                 continue
             room.prev_calling = d.need.calling
-            if d.verdict.value == "deferred":
-                room.deferred_since = room.deferred_since or now
-            else:
-                room.deferred_since = None
 
         if not self.enabled:
             plan.status, plan.reason = "disabled", "controller disabled"
@@ -1244,7 +1261,9 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         elif self.external_hold_until and now < self.external_hold_until:
             plan.reason = f"boiler switched by something else, backing off until {dt_util.as_local(self.external_hold_until):%H:%M}; {plan.reason}"
         self._log_changes(plan)
-        if self.heat_test and self.enabled:
+        if not self.restored:
+            pass  # first update after a start: mode, enabled and watching only are restored next, then it acts
+        elif self.heat_test and self.enabled:
             if not self._apply_lock.locked():
                 self.hass.async_create_background_task(self._locked(self._run_heat_test(plan)), f"{DOMAIN}_heat_test")
         elif self.enabled and self.monitor_only:
@@ -1799,7 +1818,6 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             valve_open=self._valve_open(room),
             heater_on=self._heater_on(room) if room.heaters else None,
             prev_calling=room.prev_calling,
-            deferred_min=_minutes(now, room.deferred_since) if room.deferred_since else 0.0,
             opening=opening,
             recovering_min=recovering,
         )
@@ -1916,7 +1934,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         is_on = self._commanded_on(st)
         if is_on == on:
             if on and self._setpoint_style and not self._boiler_blocked(now, on):
-                await self._boiler_raw(on, target)  # adjust the setpoint only
+                await self._send_boiler(on, target)  # adjust the setpoint only
             return
         if not force and self._boiler_blocked(now, on, st):
             return
@@ -1935,9 +1953,30 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 pass  # off is the safe direction: still allowed below
             else:
                 return
+        before = self._boiler_cmd_state, self._boiler_cmd_at
         self._boiler_cmds.append(now)
-        self._boiler_cmd_state, self._boiler_cmd_at = on, now
-        await self._boiler_raw(on, target)
+        self._boiler_cmd_state, self._boiler_cmd_at = on, now  # before the call: its state change is ours
+        if not await self._send_boiler(on, target):
+            # It never happened: not a switch (lockout count), not "something else" (back-off), retried next cycle.
+            self._boiler_cmds.pop()
+            self._boiler_cmd_state, self._boiler_cmd_at = before
+
+    async def _send_boiler(self, on: bool, target: float | None) -> bool:
+        """The boiler command, never raising: a failed call (switch offline mid-command) is logged once."""
+        try:
+            await self._boiler_raw(on, target)
+        except Exception as err:  # noqa: BLE001
+            if not self._boiler_failing:
+                self._boiler_failing = True
+                self._log(f"Boiler command ({'on' if on else 'off'}) failed: {err}. Trying again each cycle")
+                _LOGGER.warning("Boiler command to %s failed: %s", self.boiler_entity, err)
+            else:
+                _LOGGER.debug("Boiler command to %s failed again: %s", self.boiler_entity, err)
+            return False
+        if self._boiler_failing:
+            self._boiler_failing = False
+            self._log("Boiler commands work again")
+        return True
 
     def _boiler_blocked(self, now: datetime, on: bool, st: State | None = None) -> bool:
         if on and self.boiler_locked_until and now < self.boiler_locked_until:
@@ -2201,6 +2240,22 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             action = st.attributes.get("hvac_action")
             return action == "heating" if action is not None else st.state == "heat"
         return st.state == STATE_ON
+
+    def room_sensor_issue(self, room: Room, now: datetime | None = None) -> tuple[str, str] | None:
+        """A room thermometer that can't be trusted, for the card: ("unavailable" | "stale", what to tell the user).
+        Only reported: heating does nothing different. Stale goes by the last report, so a steady room isn't flagged."""
+        ents = [room.temp_entity] if room.temp_entity else [*room.trvs, *(h for h in room.heaters if h.startswith("climate."))]
+        if not ents:
+            return None
+        live = [s for s in (self._state(e) for e in ents) if s is not None and s.state not in _BAD]
+        names = " and ".join(self._friendly(e) for e in ents)
+        if not live:
+            return "unavailable", f"No temperature: {names} {'is' if len(ents) == 1 else 'are'} unavailable"
+        newest = max(getattr(s, "last_reported", None) or s.last_updated for s in live)
+        hours = ((now or dt_util.utcnow()) - newest).total_seconds() / 3600
+        if hours >= SENSOR_STALE_H:
+            return "stale", f"{names} hasn't reported for {int(hours)} h: the reading may be out of date"
+        return None
 
     def room_temp(self, room: Room) -> float | None:
         """Room thermometer, or the mean of its TRVs' own readings as a fallback."""

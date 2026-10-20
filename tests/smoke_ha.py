@@ -122,7 +122,12 @@ async def main() -> None:
 
     # No calibration lock: heating starts while learning carries on in the background.
     assert not c.calibrated
-    await c.async_set_monitor_only(False)
+    c.restored = False  # as right after a restart: the switch restoring itself refreshes, which must not act yet
+    await c.async_set_monitor_only(False, restoring=True)
+    await c.async_refresh()
+    await asyncio.sleep(0.5)
+    assert calls == [], ("no valve or boiler command before the settings are restored", calls)
+    c.restored = True
     await c.async_refresh()
     for _ in range(40):
         await asyncio.sleep(0.25)
@@ -478,6 +483,47 @@ async def main() -> None:
     hass.config_entries = saved_entries
     print("room device under the house device via", "via_device_id" if sh_entity._VIA_ID else "via_device")
 
+    # Recorder load: live-only attributes aren't recorded, the trend is rounded, sensor changes refresh at most
+    # every 30 s (the first at once).
+    from custom_components.smart_heating import sensor as sh_sensor, coordinator as sh_coord
+    assert {"trend", "deficit", "temperature", "reason"} <= sh_sensor.RoomNeed._unrecorded_attributes
+    assert {"rooms", "now"} <= sh_sensor.ClimateSensor._unrecorded_attributes
+    for e in ents:
+        if isinstance(e, sh_sensor.RoomNeed) and (t := e.extra_state_attributes.get("trend")) is not None:
+            assert t == round(t, 1), t
+    if c._change_cancel:  # earlier state changes in this test left one pending
+        c._change_cancel()
+    c._change_due, c._change_at, c._change_cancel = False, 0.0, None
+    scheduled = []
+    real_later = sh_coord.async_call_later
+    sh_coord.async_call_later = lambda hass, delay, action: scheduled.append(delay) or (lambda: None)
+    try:
+        for _ in range(3):
+            c._on_change(None)
+        assert scheduled == [0.0], scheduled
+        await c._change_refresh()
+        c._on_change(None)
+        assert len(scheduled) == 2 and 29 < scheduled[1] <= 30, scheduled
+        await c._change_refresh()
+    finally:
+        sh_coord.async_call_later = real_later
+    print("sensor changes: one refresh now, the next", round(scheduled[1]), "s later")
+
+    # A thermometer that can't be trusted is reported (card alert), heating unchanged.
+    living = c.rooms["living"]
+    assert c.room_sensor_issue(living) is None
+    assert c.room_sensor_issue(living, dt_util.utcnow() + timedelta(hours=4))[0] == "stale"
+    keep = hass.states.get(living.temp_entity)
+    hass.states.async_set(living.temp_entity, "unavailable")
+    issue = c.room_sensor_issue(living)
+    assert issue and issue[0] == "unavailable" and "unavailable" in issue[1], issue
+    need = next(e for e in ents if isinstance(e, sh_sensor.RoomNeed) and e.room_id == "living")
+    assert need.extra_state_attributes["sensor_issue"] == "unavailable"
+    from custom_components.smart_heating.sensor import HouseStatus
+    assert "Living room" in HouseStatus(c).extra_state_attributes["sensor_issues"]
+    hass.states.async_set(living.temp_entity, keep.state, keep.attributes)
+    print("sensor issues:", issue[1])
+
     # Window advice: damp bedroom, rain outside but far drier air. Only the person at home is told.
     from homeassistant.config_entries import ConfigEntry as _CE
     from homeassistant.helpers import device_registry as dr, entity_registry as er
@@ -566,6 +612,28 @@ async def main() -> None:
     await c.async_refresh()
     assert living.recovery_until is None and living.recoveries and living.recoveries[-1] is not None
     living.openings = []
+
+    # A failed boiler command never happened: not counted towards the lockout, not blamed on something else,
+    # logged once, sent again next time.
+    hass.states.async_set("switch.heating", "off")
+    object.__setattr__(hass.states.get("switch.heating"), "last_changed", dt_util.utcnow() - timedelta(minutes=30))
+    c._boiler_cmds, c._boiler_cmd_state, c._boiler_cmd_at = [], False, None
+    c.external_hold_until = c.boiler_locked_until = None
+    real_raw = c._boiler_raw
+
+    async def broken(on, target=None):
+        raise RuntimeError("Shelly unreachable")
+    c._boiler_raw = broken
+    await c._boiler(True)
+    await c._boiler(True)
+    assert c._boiler_cmds == [] and c._boiler_cmd_state is False and c._boiler_cmd_at is None
+    assert sum("Boiler command (on) failed" in e["message"] for e in c.log) == 1, [e["message"] for e in list(c.log)[:3]]
+    c._check_external_boiler(dt_util.utcnow() + timedelta(seconds=30))
+    assert c.external_hold_until is None, "a failed call is not 'something else switched it'"
+    c._boiler_raw = real_raw
+    await c._boiler(True)
+    assert c._boiler_cmd_state is True and len(c._boiler_cmds) == 1 and "work again" in c.log[0]["message"]  # newest first
+    print("boiler call failure:", [e["message"] for e in c.log if "Boiler command" in e["message"]])
 
     # The log survives a restart.
     await c.async_stop()

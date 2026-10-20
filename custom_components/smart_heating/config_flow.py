@@ -530,7 +530,6 @@ class SmartHeatingOptionsFlow(OptionsFlow):
             vol.Required("hysteresis", default=v("hysteresis", d.hysteresis)): _num(0.2, 2, 0.1, "°C"),
             vol.Required("coast_rate", default=v("coast_rate", d.coast_rate)): _num(0.1, 3, 0.1, "°C/h"),
             vol.Required("coast_horizon_min", default=v("coast_horizon_min", d.coast_horizon_min)): _num(0, 240, 5, "min"),
-            vol.Required("stack_max_wait_min", default=v("stack_max_wait_min", d.stack_max_wait_min)): _num(0, 120, 5, "min"),
             vol.Required("mild_margin", default=v("mild_margin", d.mild_margin)): _num(0.5, 5, 0.5, "°C"),
         }
         if self._type != TYPE_ELECTRIC:

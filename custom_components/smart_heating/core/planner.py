@@ -86,26 +86,6 @@ def make_plan(
         approved.append((cfg, snap))
         decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.APPROVED, why)
 
-    # Stack: upper rooms with a small deficit wait while a lower floor heats.
-    lower_active = [c.floor for c, _ in approved]
-    if lower_active:
-        lowest = min(lower_active)
-        keep = []
-        for cfg, snap in approved:
-            need = needs[cfg.room_id]
-            if (
-                cfg.floor > lowest
-                and need.level not in (Level.SAFETY, Level.MANUAL)
-                and need.deficit < s.stack_small_deficit
-                and snap.deferred_min < s.stack_max_wait_min
-            ):
-                decisions[cfg.room_id] = RoomDecision(
-                    cfg.room_id, need, Verdict.DEFERRED, "heat rising from below"
-                )
-            else:
-                keep.append((cfg, snap))
-        approved = keep
-
     # Electric heaters: rooms without a boiler radiator heat on their own heater.
     heater_ids = {c.room_id for c, _ in approved if c.heater and not c.radiator}
     approved = [(c, sn) for c, sn in approved if c.room_id not in heater_ids]

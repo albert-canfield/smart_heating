@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.3
+- **Sensor alerts on the card**: when a room's thermometer (or its TRVs, when it has none) is unavailable, or hasn't reported for 3 hours, a small alert icon shows in front of the room and at the top right of the card. Hover for what's wrong; tap the top one for the list. Heating does nothing different. Also in `sensor_issue` on each room's need sensor and `sensor_issues` on the status sensor, for automations.
+- Removed the "heat rising from below" wait. Upper rooms a little under target no longer wait up to 40 min while a lower floor heats: how much heat rises depends on which rooms heat below, so a fixed rule was usually wrong, and the held room often needed its own boiler run later. Now it joins the run already going. The Upper floor max wait setting (Advanced) is gone.
+- After a restart or reload, no TRV or boiler command goes out until the mode, Enabled and Watching only are restored. Before, the first decision ran as Auto, so with Off or Watching only set it could move the TRVs once.
+- A boiler command that fails (the switch drops off the network mid-command) no longer breaks that update. It counts as not sent: it isn't counted towards boiler protection, isn't taken for something else switching the boiler (no 15 min back-off), is noted once in the log and is sent again on the next cycle.
+- Much lighter on the Home Assistant database. Each room's need sensor no longer records its live values (temperature, trend, deficit, reason and a few more) in history: they changed on almost every refresh and stored a new attribute row each time, about 5 MB a day per room. The house temperature sensor no longer records every room's reading. The card still shows all of them live; settings-like values (target, its source, in use, override) stay in history.
+- The room trend is rounded to 0.1°/h (the card shows one decimal), so it no longer changes on every refresh.
+- Sensor changes refresh Smart Heating at once, then at most every 30 seconds instead of every 10. Taps on the card (mode, Heat now) still act at once.
+- README and docs brought in line with the code: the heating gas and electricity sensors' entity ids on new installs (`sensor.smart_heating_heating_gas_today`, `..._heating_gas_cost_today`, `..._heating_electricity_today`), up to 8 h of cooling data a night, the full room settings table, which alerts go to whom, Repairs checks, status and room attributes for automations, and no more mentions of heat rising between floors.
+
 ## 0.15.2
 - When a room is in use, in order: a presence sensor decides; with no presence sensor the lights do; with neither, **Heat now** on the card (or a schedule). Media players playing count like presence.
 - Lights (rooms with no presence sensor): the room is in use for as long as a light is on, and for 30 minutes after it goes off (switching one on and straight off counts too). Before, a light only counted for its first 30 minutes and the room emptied as soon as it went off.

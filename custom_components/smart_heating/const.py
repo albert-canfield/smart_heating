@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.15.2"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.15.3"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -88,7 +88,6 @@ OPT_KEYS = [
     "min_off_min",
     "coast_rate",
     "coast_horizon_min",
-    "stack_max_wait_min",
     "hw_max_pause_min",
     "trv_open_offset",
     "trv_closed",
@@ -114,6 +113,8 @@ SAVE_DELAY_S = 600
 DEFAULT_OVERRIDE_HOURS = 2.0
 
 UPDATE_INTERVAL_S = 60
+SENSOR_STALE_H = 3  # a room thermometer with no report for this long is flagged on the card (heating unchanged)
+SENSOR_REFRESH_S = 30  # a sensor change refreshes at once, then at most this often (each refresh writes to the recorder)
 TRV_STAGGER_S = 3
 
 EVENT_DECISION = "smart_heating_decision"

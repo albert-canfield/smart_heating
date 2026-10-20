@@ -58,8 +58,6 @@ class Settings:
     min_off_min: float = 10.0
     coast_rate: float = 0.3  # degC/h considered "rising on its own"
     coast_horizon_min: float = 90.0
-    stack_max_wait_min: float = 40.0
-    stack_small_deficit: float = 1.0
     batch_min_deficit: float = 1.0  # must exceed hysteresis to have any effect
     hw_priority: bool = True
     hw_max_pause_min: float = 45.0
@@ -91,7 +89,6 @@ class RoomSnapshot:
     valve_open: bool | None = None
     heater_on: bool | None = None
     prev_calling: bool = False
-    deferred_min: float = 0.0  # how long this room has been deferred
     opening: str | None = None  # "door" or "window" to outside, open for at least a minute
     recovering_min: float = 0.0  # minutes left waiting for the room to recover after it closed
 

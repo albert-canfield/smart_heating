@@ -202,12 +202,19 @@ class HouseStatus(HouseEntity, SensorEntity):
             "calling_rooms": [
                 c.rooms[r].cfg.name for r, d in p.rooms.items() if d.need.calling
             ],
+            "sensor_issues": [r.cfg.name for r in c.rooms.values() if c.room_sensor_issue(r)],
         }
 
 
 class RoomNeed(RoomEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [l.value for l in Level]
+    # Live values for the card, changing on almost every refresh: kept out of the recorder (it stored a new
+    # attribute row each time). Settings-like ones (target, its source, occupied, override) stay recorded.
+    _unrecorded_attributes = frozenset({
+        "temperature", "trend", "deficit", "reason", "calling", "heating_now", "heater_on", "heater_wanted",
+        "open_since", "recovering_until", "recoveries_min", "override_until", "sensor_issue_text",
+    })
 
     def __init__(self, coordinator, room_id: str) -> None:
         super().__init__(coordinator, room_id, "need")
@@ -223,6 +230,7 @@ class RoomNeed(RoomEntity, SensorEntity):
         room = self.coordinator.rooms[self.room_id]
         if not d:
             return {}
+        issue = self.coordinator.room_sensor_issue(room)
         return {
             "floor": room.cfg.floor,
             "floor_name": room.floor_name,
@@ -238,7 +246,7 @@ class RoomNeed(RoomEntity, SensorEntity):
             "target_source": d.need.source.value if d.need.source else None,  # frost (safety), baseline, comfort (in use), manual
             "deficit": d.need.deficit,
             "calling": d.need.calling,
-            "trend": room.trend.rate(),
+            "trend": None if (rate := room.trend.rate()) is None else round(rate, 1),  # the card shows one decimal
             "occupied": room.occupied,
             "override": room.override.value,
             "override_until": room.override_until.isoformat() if room.override_until else None,
@@ -258,6 +266,9 @@ class RoomNeed(RoomEntity, SensorEntity):
             "recoveries_min": room.recoveries,
             "heater_stopped": room.heater_block.reason if room.heater_block and room.heater_block.shown else None,
             "reason": d.need.reason,
+            # Thermometer unavailable or not reporting: shown on the card, heating unchanged.
+            "sensor_issue": issue[0] if issue else None,
+            "sensor_issue_text": issue[1] if issue else None,
         }
 
 
@@ -291,6 +302,7 @@ class ClimateSensor(HouseEntity, SensorEntity):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_suggested_display_precision = 1
+    _unrecorded_attributes = frozenset({"rooms", "now"})  # every room's reading, the outdoor reading: live only
 
     def __init__(self, coordinator, key: str, getter, kind: str, floor: int | None = None) -> None:
         super().__init__(coordinator, key)

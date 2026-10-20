@@ -10,14 +10,14 @@
  *   hide_title: false     # optional
  */
 
-const CARD_VERSION = "0.15.2";  // keep in step with const.py VERSION (tests/test_card.py checks)
+const CARD_VERSION = "0.15.3";  // keep in step with const.py VERSION (tests/test_card.py checks)
 
 const STATE_LABEL = {
   approved: "Heating",
   piggyback: "Topping up",
   wants: "Wants heat",
   watched: "Watched only",  // nothing heats it: shown, learned from, never heated  // approved, but no heat flowing yet (hot water first, boiler rest, protection, watching)
-  deferred: "Waiting",  // warming on its own, heat rising from below, or a small demand batched
+  deferred: "Waiting",  // warming on its own, or a small demand batched
   vetoed: "Not needed",
   idle: "Idle",
   fault: "No sensor",
@@ -75,6 +75,7 @@ const ICON_PERSON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12"
 const ICON_BOLT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4.5 13.5H11L10 22l8.5-11.5H12z"/></svg>';
 const ICON_WINDOW = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="1.5"/><path d="M12 3.5v17M5 12h14"/></svg>';
 const ICON_WIN_OPEN = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="17" rx="1.2"/><path d="M12.5 3.5l8 3v11l-8 3"/></svg>';
+const ICON_ALERT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.8l9 15.7H3z"/><path d="M12 10v4.3M12 17v.3"/></svg>';
 const ICON_CLOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>';
 const ICON_DOOR = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21h16"/><path d="M6 21V3h9v18"/><path d="M15 3.5l4 2V20l-4 1"/><circle cx="12.5" cy="12.5" r=".6"/></svg>';
 const ICON_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
@@ -125,6 +126,7 @@ class SmartHeatingCard extends HTMLElement {
     this._expanded = false;
     this._calOpen = false;
     this._winOpen = false;
+    this._alertOpen = false;
     this._aboutOpen = new Set();  // rooms whose "Room profile" is unfolded
     this._tip = null;
     this._energyOpen = false;
@@ -277,6 +279,8 @@ class SmartHeatingCard extends HTMLElement {
         hoursToBase: pred?.attributes.hours_to_baseline,
         predBase: pred?.attributes.baseline,
         reason: decision?.attributes.reason || a.reason || "",
+        sensorIssue: a.sensor_issue || null,  // thermometer unavailable or not reporting
+        sensorIssueText: a.sensor_issue_text || null,
       });
     }
     rooms.sort((x, y) => (y.floor - x.floor) || x.name.localeCompare(y.name));
@@ -564,9 +568,10 @@ class SmartHeatingCard extends HTMLElement {
         <header>
           <div class="title">
             <h2>${this._titleHtml() || esc(this._config.title || "Smart Heating")}</h2>
-            <p class="status s-${d.status}">${statusDot(d)}${esc(statusText)}${indicators(d)}${this._badge(d)}${this._winBadge(d)}</p>
+            <p class="status s-${d.status}">${statusDot(d)}${esc(statusText)}${indicators(d)}${this._badge(d)}${this._winBadge(d)}${this._alertBtn(d)}</p>
           </div>
         </header>
+        ${this._alertBox(d)}
         ${this._winBox(d)}
         ${this._calPanel(d)}
         ${this._ready(d)}
@@ -630,6 +635,7 @@ class SmartHeatingCard extends HTMLElement {
         <div class="summary" data-expand role="button" tabindex="0" aria-expanded="${ex}" aria-label="${ex ? "Collapse" : "Expand"} heating details">
           <div class="hdr">
             ${this._titleHtml()}
+            ${this._alertBtn(d)}
             <span class="st s-${d.status}">${statusDot(d)}<span class="stt">${esc(statusText)}</span></span>
             <span class="chev ${ex ? "up" : ""}" aria-hidden="true">${CHEV}</span>
           </div>
@@ -638,6 +644,7 @@ class SmartHeatingCard extends HTMLElement {
             ${badge || indicators(d) ? `<span class="sub">${indicators(d)}${badge}</span>` : ""}
           </div>
         </div>
+        ${this._alertBox(d)}
         ${this._winBox(d)}
         ${this._calPanel(d)}
         ${this._ready(d)}
@@ -692,6 +699,11 @@ class SmartHeatingCard extends HTMLElement {
       if (!this._aboutOpen.delete(name)) this._aboutOpen.add(name);
       this._render();
     }));
+    root.querySelector("[data-alert]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._alertOpen = !this._alertOpen;
+      this._render();
+    });
     root.querySelector("[data-win]")?.addEventListener("click", (e) => {
       e.stopPropagation();
       this._winOpen = !this._winOpen;
@@ -787,7 +799,7 @@ class SmartHeatingCard extends HTMLElement {
       <button class="chip v-${state} ${r.hasTrv || r.hasHeater ? "" : "dumb"}" data-room="${esc(r.name)}"
         aria-expanded="${this._open === r.name}" aria-label="${esc(r.name)}, ${r.temp == null ? "no reading" : r.temp.toFixed(1) + " degrees"}, ${esc(label)}"
         title="${esc(r.name)}: ${esc(r.reason)}">
-        ${this._adviceIcon(r)}
+        ${this._issueIcon(r)}${this._adviceIcon(r)}
         ${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}
         ${r.heaterOn ? `<span class="bolt" aria-label="heater on">${ICON_BOLT}</span>` : ""}
         ${this._openIcon(r)}
@@ -829,6 +841,26 @@ class SmartHeatingCard extends HTMLElement {
       .finally(() => { this._hourlyAt = Date.now(); this._hourlyBusy = false; });
   }
 
+  // Rooms whose thermometer is unavailable or not reporting: an alert at the top right, the list on tap.
+  _alertBtn(d) {
+    const bad = d.rooms.filter((r) => r.sensorIssue);
+    if (!bad.length) return "";
+    const tip = `Sensor problem: ${bad.map((r) => `${r.name}: ${r.sensorIssueText}`).join("; ")}`;
+    return `<button class="halert" data-alert aria-expanded="${this._alertOpen}" title="${esc(tip)}" aria-label="${esc(tip)}">${ICON_ALERT}</button>`;
+  }
+
+  _alertBox(d) {
+    const bad = d.rooms.filter((r) => r.sensorIssue);
+    if (!this._alertOpen || !bad.length) return "";
+    return `<div class="winbox alertbox" role="status"><b>Sensor problem</b><ul>${
+      bad.map((r) => `<li><b>${esc(r.name)}</b>: ${esc(r.sensorIssueText)}</li>`).join("")}</ul></div>`;
+  }
+
+  _issueIcon(r) {
+    if (!r.sensorIssue) return "";
+    return `<span class="sissue" title="${esc(r.sensorIssueText)}" role="img" aria-label="${esc(r.sensorIssueText)}">${ICON_ALERT}</span>`;
+  }
+
   // A tiny window icon in front of a room the window advice names: open them, or close them.
   _adviceIcon(r) {
     const w = this._data?.win;
@@ -861,7 +893,7 @@ class SmartHeatingCard extends HTMLElement {
       <button class="room v-${state} ${r.hasTrv || r.hasHeater ? "" : "dumb"}" data-room="${esc(r.name)}"
         aria-expanded="${this._open === r.name}"
         title="${esc(r.reason)}">
-        <span class="name">${this._adviceIcon(r)}${esc(r.name)}${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}${this._openIcon(r)}</span>
+        <span class="name">${this._issueIcon(r)}${this._adviceIcon(r)}${esc(r.name)}${r.inUse ? `<span class="inuse" title="In use" role="img" aria-label="In use">${ICON_PERSON}</span>` : ""}${this._openIcon(r)}</span>
         <span class="temp">${r.temp == null ? "–" : `${r.temp.toFixed(1)}°`}<small>${trend}</small></span>
         <span class="meta">${esc(label)}${r.target != null ? `<span class="target">to ${Number(r.target).toFixed(1)}°</span>` : ""}</span>
       </button>`;
@@ -1216,6 +1248,17 @@ const STYLE = `<style>
   .opn.on { color: var(--warning-color, #f5a524); }
   .opn svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .room .name .opn { margin-left: 5px; vertical-align: -1px; }
+  .sissue { display: inline-flex; flex: none; width: 12px; height: 12px; color: var(--error-color, #db4437); }
+  .sissue svg, .halert svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .room .name .sissue { margin-right: 5px; vertical-align: -1px; }
+  .halert { all: unset; cursor: pointer; display: inline-flex; flex: none; width: 18px; height: 18px; padding: 2px; border-radius: 6px;
+            color: var(--error-color, #db4437); margin-left: auto; }
+  .halert:hover { background: color-mix(in srgb, var(--error-color, #db4437) 14%, transparent); }
+  .halert:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 1px; }
+  .status .halert { margin-left: 4px; width: 16px; height: 16px; }
+  .alertbox { border-color: color-mix(in srgb, var(--error-color, #db4437) 45%, transparent); }
+  .alertbox ul { margin: 4px 0 0; padding-left: 18px; }
+  .alertbox li { margin: 2px 0; }
   .wadv { display: inline-flex; flex: none; width: 12px; height: 12px; }
   .wadv svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .wadv.open { color: var(--primary-color); }
@@ -1412,6 +1455,7 @@ const STYLE = `<style>
   .ttl .logo svg { width: 18px; height: 18px; }
   .ttl ha-icon { --mdc-icon-size: 18px; color: var(--sh-heat); flex: none; }
   .hdr .st { margin-left: auto; justify-content: flex-end; }
+  .hdr .halert + .st { margin-left: 0; }  /* the alert takes the push to the right, the status follows it */
   .row1 { display: flex; align-items: center; gap: 12px; }
   .row1 .sub { margin-top: 2px; }
   h2 .ttl { font-size: 1.1rem; color: var(--primary-text-color); }

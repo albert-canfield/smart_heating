@@ -158,24 +158,16 @@ def test_coasting_room_deferred():
     assert not p.boiler_on and p.rooms["living"].verdict is Verdict.DEFERRED
 
 
-def test_stack_defers_upper_small_deficit():
+def test_upper_room_heats_with_the_run_below():
+    # No waiting for heat rising from below: an upper room a little under target joins the run the room below starts.
     rooms = [
         (PLAY, RoomSnapshot(temp=16.0, occupied=True, valve_open=False)),
         (BED, RoomSnapshot(temp=18.0, scheduled=True, valve_open=False)),
     ]
     p = make_plan(rooms, house(), S)
     assert p.boiler_on
-    assert p.rooms["bed"].verdict is Verdict.DEFERRED
-    assert "play" in p.open_rooms
-
-
-def test_stack_releases_after_max_wait():
-    rooms = [
-        (PLAY, RoomSnapshot(temp=16.0, occupied=True)),
-        (BED, RoomSnapshot(temp=18.0, scheduled=True, deferred_min=45)),
-    ]
-    p = make_plan(rooms, house(), S)
     assert p.rooms["bed"].verdict is Verdict.APPROVED
+    assert {"play", "bed"} <= set(p.open_rooms)
 
 
 def test_hot_water_priority_pauses_heating():
