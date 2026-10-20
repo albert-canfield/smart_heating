@@ -10,7 +10,7 @@
  *   hide_title: false     # optional
  */
 
-const CARD_VERSION = "0.15.3";  // keep in step with const.py VERSION (tests/test_card.py checks)
+const CARD_VERSION = "0.15.4";  // keep in step with const.py VERSION (tests/test_card.py checks)
 
 const STATE_LABEL = {
   approved: "Heating",
@@ -403,7 +403,7 @@ class SmartHeatingCard extends HTMLElement {
   /* ---------- helpers: tips, steppers, calibration ---------- */
 
   _info(key, label = "More info") {
-    return `<button class="info ${this._tip === key ? "on" : ""}" data-tip="${key}" aria-label="${esc(label)}" aria-expanded="${this._tip === key}">${ICON_INFO}</button>`;
+    return `<button class="info ${this._tip === key ? "on" : ""}" data-tip="${esc(key)}" aria-label="${esc(label)}" aria-expanded="${this._tip === key}">${ICON_INFO}</button>`;
   }
 
   _tipBox(key, text) {
@@ -417,9 +417,9 @@ class SmartHeatingCard extends HTMLElement {
       <div class="stepper-row">
         <span class="sp-label">${esc(label)}${this._info(key)}${sub ? `<small>${esc(sub)}</small>` : ""}</span>
         <span class="stepper ${pending ? "pending" : ""}" role="group" aria-label="${esc(label)}">
-          <button data-step="-1" data-entity="${entity}" data-value="${value ?? ""}" aria-label="Lower">−</button>
+          <button data-step="-1" data-entity="${esc(entity)}" data-value="${value ?? ""}" aria-label="Lower">−</button>
           <output aria-live="polite">${v == null ? "–" : Number(v).toFixed(1)}<small>°</small></output>
-          <button data-step="1" data-entity="${entity}" data-value="${value ?? ""}" aria-label="Raise">+</button>
+          <button data-step="1" data-entity="${esc(entity)}" data-value="${value ?? ""}" aria-label="Raise">+</button>
         </span>
       </div>
       ${this._tipBox(key, tip)}`;
@@ -766,10 +766,10 @@ class SmartHeatingCard extends HTMLElement {
     root.querySelectorAll("[data-ov]").forEach((b) => b.addEventListener("click", () => this._setOverride(b.dataset.entity, b.dataset.ov)));
   }
 
-  _floorLabel(f) {
+  _floorLabel(f) {  // HTML: the floor registry name is escaped
     const n = this._data.floorNames?.[f];
-    if (!n) return FLOOR_NAME[f] ?? f;
-    return n.replace(/\s*floor$/i, "") || n;
+    if (!n) return esc(FLOOR_NAME[f] ?? f);
+    return esc(n.replace(/\s*floor$/i, "") || n);
   }
 
   _state(r) {
@@ -1020,7 +1020,7 @@ class SmartHeatingCard extends HTMLElement {
     const why = this._why(r);
     const arrow = r.trend > 0.15 ? "↑" : r.trend < -0.15 ? "↓" : "";
     const until = r.overrideUntil ? hhmm(r.overrideUntil) : null;
-    const opt = (key, text) => `<button data-ov="${key}" data-entity="${r.overrideEntity}" aria-pressed="${r.override === key}">${text}</button>`;
+    const opt = (key, text) => `<button data-ov="${key}" data-entity="${esc(r.overrideEntity)}" aria-pressed="${r.override === key}">${text}</button>`;
     const open = this._aboutOpen.has(r.name);
     const ins = r.grade ? (r.settled === false && r.gradeRange ? r.gradeRange : r.grade) : null;
     const settling = r.settled === false && (r.calibration ?? 0) < 100;
@@ -1060,7 +1060,7 @@ function money(v, currency) {
   try {
     return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "GBP" }).format(v);
   } catch (e) {
-    return `${Number(v).toFixed(2)} ${currency || ""}`.trim();
+    return esc(`${Number(v).toFixed(2)} ${currency || ""}`.trim());
   }
 }
 

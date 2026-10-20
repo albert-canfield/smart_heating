@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.4
+- The card is served from the integration again (`/smart_heating/smart-heating-card.js`) and no longer copied into your `www` folder, as asked in the HACS review. The dashboard resource is moved back automatically. If you ran 0.14.1 to 0.15.3, you can delete the `www/smart_heating/` folder they left behind.
+- Floor names (and a few other values from Home Assistant: room names in the info buttons, entity ids, the currency) are escaped in the card, so a name with `<` or `"` can't break the card or add markup.
+
 ## 0.15.3
 - **Sensor alerts on the card**: when a room's thermometer (or its TRVs, when it has none) is unavailable, or hasn't reported for 3 hours, a small alert icon shows in front of the room and at the top right of the card. Hover for what's wrong; tap the top one for the list. Heating does nothing different. Also in `sensor_issue` on each room's need sensor and `sensor_issues` on the status sensor, for automations.
 - Removed the "heat rising from below" wait. Upper rooms a little under target no longer wait up to 40 min while a lower floor heats: how much heat rises depends on which rooms heat below, so a fixed rule was usually wrong, and the held room often needed its own boiler run later. Now it joins the run already going. The Upper floor max wait setting (Advanced) is gone.

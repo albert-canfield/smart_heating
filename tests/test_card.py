@@ -1,6 +1,5 @@
-"""Card loading: www copy, dashboard resource, versions (needs the homeassistant package)."""
+"""Card loading: own static path, dashboard resource, versions (needs the homeassistant package)."""
 import asyncio
-import gzip
 import json
 import re
 import sys
@@ -21,31 +20,6 @@ def test_versions_match():
     js = re.search(r'const CARD_VERSION = "([^"]+)"', card.SOURCE.read_text()).group(1)
     readme = re.search(r"^Version (\S+)\. ", (ROOT / "README.md").read_text(), re.M).group(1)
     assert manifest == VERSION == js == readme
-
-
-def test_copy_to_www(tmp_path):
-    card.copy_to_www(tmp_path)
-    js, gz = tmp_path / "smart_heating" / card.NAME, tmp_path / "smart_heating" / f"{card.NAME}.gz"
-    data = card.SOURCE.read_bytes()
-    assert js.read_bytes() == data and gzip.decompress(gz.read_bytes()) == data
-    assert gz.stat().st_size < len(data) / 2
-    stamp = (js.stat().st_mtime_ns, gz.stat().st_mtime_ns)
-    card.copy_to_www(tmp_path)
-    assert (js.stat().st_mtime_ns, gz.stat().st_mtime_ns) == stamp, "unchanged card is not rewritten"
-    gz.write_bytes(gzip.compress(b"old card"))
-    card.copy_to_www(tmp_path)
-    assert gzip.decompress(gz.read_bytes()) == data, "a stale .gz is replaced"
-    (tmp_path / "smart_heating" / "mine.txt").write_text("x")
-    card.remove_from_www(tmp_path)
-    assert not js.exists() and not gz.exists() and (tmp_path / "smart_heating" / "mine.txt").exists()
-
-
-def test_local_served(tmp_path):
-    router = web.UrlDispatcher()
-    hass = SimpleNamespace(http=SimpleNamespace(app=SimpleNamespace(router=router)))
-    assert not card.local_served(hass)
-    router.register_resource(web.StaticResource("/local", str(tmp_path)))
-    assert card.local_served(hass)
 
 
 class Resources:
@@ -75,22 +49,20 @@ class Resources:
 def test_sync_resource():
     other = {"type": "module", "url": "/hacsfiles/button-card/button-card.js?hacstag=1"}
     res = Resources([other])
-    asyncio.run(card.sync_resource(res, "/local/smart_heating/smart-heating-card.js?v=1"))
+    asyncio.run(card.sync_resource(res, "/smart_heating/smart-heating-card.js?v=1"))
     assert res.loaded
-    assert sorted(r["url"] for r in res.async_items()) == sorted([other["url"], "/local/smart_heating/smart-heating-card.js?v=1"])
+    assert sorted(r["url"] for r in res.async_items()) == sorted([other["url"], "/smart_heating/smart-heating-card.js?v=1"])
     # An update moves it to the new version; duplicates (also hand-made ones) go.
     res = Resources([other, {"type": "module", "url": "/smart_heating/smart-heating-card.js?v=0.13.0"},
                      {"type": "js", "url": "/local/smart_heating/smart-heating-card.js"}])
-    asyncio.run(card.sync_resource(res, "/local/smart_heating/smart-heating-card.js?v=2"))
+    asyncio.run(card.sync_resource(res, "/smart_heating/smart-heating-card.js?v=2"))
     ours = [r for r in res.async_items() if "smart-heating" in r["url"]]
-    assert ours == [{"id": "1", "type": "module", "url": "/local/smart_heating/smart-heating-card.js?v=2"}]
+    assert ours == [{"id": "1", "type": "module", "url": "/smart_heating/smart-heating-card.js?v=2"}]
     assert other["url"] in [r["url"] for r in res.async_items()]
 
 
-def _hass(tmp_path, resources, local=True):
+def _hass(tmp_path, resources):
     router = web.UrlDispatcher()
-    if local:
-        router.register_resource(web.StaticResource("/local", str(tmp_path)))
     extra = SimpleNamespace(urls=set())
     extra.add, extra.remove = extra.urls.add, extra.urls.discard
 
@@ -110,28 +82,22 @@ def _hass(tmp_path, resources, local=True):
 
 
 def test_register_update_remove(tmp_path):
-    res = Resources([{"type": "module", "url": "/local/smart_heating/smart-heating-card.js?v=0.0.1"}])
+    # A resource left by 0.14.1 to 0.15.3 (served from the www copy) is pointed back at the integration's own path.
+    res = Resources([{"type": "module", "url": "/local/smart_heating/smart-heating-card.js?v=0.15.3"}])
     hass, extra = _hass(tmp_path, res)
-    want = f"/local/smart_heating/smart-heating-card.js?v={VERSION}"
+    want = f"/smart_heating/smart-heating-card.js?v={VERSION}"
     asyncio.run(card.async_register_card(hass))
-    assert [r["url"] for r in res.async_items()] == [want], "resource follows the installed version"
+    assert [r["url"] for r in res.async_items()] == [want], "resource follows the installed version, own path"
     assert extra.urls == {want}, "same URL as the resource: the browser loads it once"
-    assert (tmp_path / "www" / "smart_heating" / card.NAME).exists()
+    assert not (tmp_path / "www").exists(), "nothing written to the user's www folder"
     asyncio.run(card.async_register_card(hass))
     assert len(res.async_items()) == 1 and extra.urls == {want}
     asyncio.run(card.async_remove_card(hass))
     assert res.async_items() == [] and extra.urls == set()
-    assert not (tmp_path / "www" / "smart_heating").exists()
 
 
-def test_register_fallbacks(tmp_path):
-    # /local not served yet (www created after HA started): the integration's own path.
-    res = Resources()
-    hass, extra = _hass(tmp_path, res, local=False)
-    asyncio.run(card.async_register_card(hass))
-    own = f"/smart_heating/smart-heating-card.js?v={VERSION}"
-    assert [r["url"] for r in res.async_items()] == [own] and extra.urls == {own}
+def test_register_yaml_resources(tmp_path):
     # Resources in YAML: no collection to write to, the extra module still loads the card.
     hass, extra = _hass(tmp_path, SimpleNamespace())
     asyncio.run(card.async_register_card(hass))
-    assert extra.urls == {f"/local/smart_heating/smart-heating-card.js?v={VERSION}"}
+    assert extra.urls == {f"/smart_heating/smart-heating-card.js?v={VERSION}"}
