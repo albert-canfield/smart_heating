@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.15.5
+- A room is in use 1 minute after its presence sensor (or a media player) switches on, instead of after 5 minutes of continuous presence. That was slow, and with motion sensors, which drop back to off after a minute or so without movement, a room could take much longer or never count. Smart Heating also checks again right at that minute instead of waiting for its next regular update. A walk-through still doesn't count.
+- Responsive again: presence, lights, media, doors and windows, schedules, the boiler and hot water, heaters and away act at once, as before 0.15.3. Only measurements (temperatures, humidity, power, TRV readings, weather), which report every few seconds, still refresh Smart Heating at most every 30 seconds, which keeps the database light.
+- The house target moves only the in-use targets of the rooms. The day and night baselines for empty rooms stay where you set them (Configure, Temperatures and Night); before, they moved with the house target. The house target can't go below the day baseline.
+- **Motion sensors** (device class motion) mark a room in use after two triggers within 10 minutes, or 5 minutes on, so a walk-through doesn't count. Presence sensors (occupancy, mmWave) keep the 1 minute rule.
+- **Night**: rooms stay at the night baseline. Only the room's schedule or Heat now brings comfort heat at night; presence, media and lights no longer do (people sleep in the room with a sensor or a night light on).
+- **TRVs always stay in heat mode**: closed is the frost setpoint (5° by default), so the TRV still guards against freezing; a TRV found in mode off is switched back to heat. New option **Open TRVs fully** (Configure, Advanced): an open TRV goes to its max (30° on most, like the Kasa KE100) instead of target + offset, so its own sensor by the hot radiator can't close it early. With it on there is no room cap if Home Assistant stops while the boiler runs.
+- The kill switch, Watching only and a mode change now stop TRV, heater and boiler commands already on their way (a plan moving many TRVs takes seconds). Turning Smart Heating off also stops a heat test.
+- A room whose thermometer is unavailable keeps its TRV as it is (it was closed). With every thermometer down, electric heaters go off.
+- A room with no radiator and no heater (watched only) never calls the boiler.
+- A hybrid room whose heater is held off by a precaution heats on gas instead of waiting.
+- On a mild day a cold room already heating carries on until it is warm, instead of stopping halfway. Coasting only delays starting the boiler: a room joins a run already going.
+- The boiler switch, its running sensor and the hot water sensor are no longer taken as a room's TRV or heater when rooms are made from areas.
+- Boiler flicker lockout: logged and notified once, not on every cycle while it lasts. The "boiler on for" time works with setpoint thermostats too.
+- Heat now and Off on a room survive a restart until they expire. Learned data is saved every 10 minutes, not only on a clean stop, so a power cut loses little.
+- After a heat test, TRVs go back to their mode and setpoint from before (a TRV that was off stays off).
+- Door and window sensors now refresh the room at once.
+- A daily gas or electricity total that resets after midnight is no longer taken as a revised reading (it lost the day's first part). A restart across midnight closes the electricity day instead of losing it.
+- Import areas reloads Smart Heating once, not once per room. A failed setup no longer leaves listeners running.
+- Lighter database: the status sensor's live room lists and reason, each room's decision reason and the prediction details are no longer recorded in history.
+- The Notifications form shows the window alerts default the integration actually uses.
+- Card: no lost steps when tapping + or - quickly; the header and room names wrap on phones instead of scrolling sideways; long floor and room names stay inside the card; a config change applies at once; keyboard focus stays put while the card updates, and the expand arrow is a real button; `hide_title` works in the full layout too; less work per Home Assistant update; no "heating by hour" fetch while the card is collapsed.
+
 ## 0.15.4
 - The card is served from the integration again (`/smart_heating/smart-heating-card.js`) and no longer copied into your `www` folder, as asked in the HACS review. The dashboard resource is moved back automatically. If you ran 0.14.1 to 0.15.3, you can delete the `www/smart_heating/` folder they left behind.
 - Floor names (and a few other values from Home Assistant: room names in the info buttons, entity ids, the currency) are escaped in the card, so a name with `<` or `"` can't break the card or add markup.

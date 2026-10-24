@@ -59,14 +59,15 @@ def test_office_at_18_8_no_heat():
     assert not n.calling
 
 
-def test_night_dark_bedroom_no_comfort():
-    n = evaluate_need(BED, RoomSnapshot(temp=16.0, scheduled=True), house(night=True), S)
-    assert not n.calling  # 16.0 > 15 night baseline - hysteresis
+def test_night_presence_and_lights_dont_count():
+    # People sleep with presence on and a night light: at night the room stays at the night baseline.
+    n = evaluate_need(BED, RoomSnapshot(temp=16.0, occupied=True, lights_on=True), house(night=True), S)
+    assert not n.calling and n.source is Level.BASELINE  # 16.0 > 15 night baseline - hysteresis
 
 
-def test_night_lights_on_bedroom_comfort():
-    n = evaluate_need(BED, RoomSnapshot(temp=17.0, lights_on=True), house(night=True), S)
-    assert n.calling and n.level is Level.COMFORT
+def test_night_schedule_brings_comfort():
+    n = evaluate_need(BED, RoomSnapshot(temp=17.0, scheduled=True), house(night=True), S)
+    assert n.calling and n.level is Level.COMFORT and "scheduled" in n.reason
 
 
 def test_hysteresis_keeps_calling_until_overshoot():
@@ -261,6 +262,23 @@ def test_dumb_room_never_gets_valve_command():
 def test_all_sensors_down_fails_safe():
     p = make_plan([(LIVING, RoomSnapshot(temp=None))], house(), S)
     assert not p.boiler_on and p.status == "fault"
+    heater = RoomConfig("e", "Cafe", 0, Priority.A, 19.0, has_trv=False, radiator=False, heater=True)
+    p = make_plan([(heater, RoomSnapshot(temp=None, heater_on=True))], house(), S)
+    assert p.rooms["e"].heater_on is False  # no reading anywhere: the heater goes off
+
+
+def test_room_without_reading_keeps_its_trv_as_is():
+    rooms = [(LIVING, RoomSnapshot(temp=None, valve_open=True)), (KITCHEN, RoomSnapshot(temp=17.0, occupied=True, valve_open=False))]
+    p = make_plan(rooms, house(), S)
+    assert p.rooms["living"].verdict is Verdict.FAULT and p.rooms["living"].open_valve is None
+    p = make_plan(rooms, house(), S, boiler_control=False)
+    assert p.rooms["living"].open_valve is None
+
+
+def test_watched_only_room_never_calls_the_boiler():
+    watched = RoomConfig("w", "Loft", 2, Priority.A, 19.0, has_trv=False, radiator=False, heater=False)
+    p = make_plan([(watched, RoomSnapshot(temp=12.0, occupied=True))], house(), S)
+    assert not p.boiler_on and p.rooms["w"].verdict is Verdict.IDLE
 
 
 def test_mode_off_stops_comfort():
@@ -271,10 +289,21 @@ def test_mode_off_stops_comfort():
 # ---------- occupancy & trend ----------
 
 def test_presence_join_needs_hold():
-    sig = [Signal(True, NOW - timedelta(minutes=2))]
+    # One minute on marks the room in use: quick to notice someone, a walk-through doesn't count.
+    sig = [Signal(True, NOW - timedelta(seconds=30))]
     assert not is_occupied(NOW, sig, [], [], was_occupied=False)
-    sig = [Signal(True, NOW - timedelta(minutes=6))]
+    sig = [Signal(True, NOW - timedelta(seconds=70))]
     assert is_occupied(NOW, sig, [], [], was_occupied=False)
+
+
+def test_motion_sensor_needs_two_triggers():
+    # A motion (PIR) sensor stays on 1 to 3 min per trigger: one trigger is a walk-through.
+    walk = [Signal(True, NOW - timedelta(seconds=90), motion=True, triggers=1)]
+    assert not is_occupied(NOW, walk, [], [], was_occupied=False)
+    again = [Signal(True, NOW - timedelta(seconds=20), motion=True, triggers=2)]
+    assert is_occupied(NOW, again, [], [], was_occupied=False)
+    moving = [Signal(True, NOW - timedelta(minutes=6), motion=True, triggers=1)]
+    assert is_occupied(NOW, moving, [], [], was_occupied=False), "on 5 min without a break"
 
 
 def test_presence_leave_delay():
@@ -577,7 +606,7 @@ def test_energy_meter_daily_total_reset_and_revisions():
         t += timedelta(minutes=10)
         d = d.tick(t, NOW.date(), False, False, False, v, None)
     kwh, measured = d.gas_kwh(False, 15)
-    assert measured and kwh == 3.0  # 40 -> 42, then 0.5 -> 1.5; the 40.9 revision is ignored
+    assert measured and kwh == 3.5  # 40 -> 42, then 0 -> 1.5 after the reset; the 40.9 revision is ignored
 
 
 def test_energy_cost_at_the_rate_when_used_without_standing_charge():
@@ -651,7 +680,8 @@ def test_setpoints_shift_and_keep_room_difference():
     sp = Setpoints.initial([living, bed, hall])
     assert sp.house == 19.0 and sp.offset == 0
     sp.house = 20.5
-    assert sp.comfort(hall) == 18.5 and sp.settings(Settings()).baseline_day == 18.5
+    assert sp.comfort(hall) == 18.5
+    assert sp.settings(Settings()) == Settings(), "the house target moves in-use comfort only"
     sp.set_room(bed, 21.0)
     sp.house = 19.0
     assert sp.comfort(bed) == 19.5 and sp.is_custom(bed)
@@ -661,11 +691,11 @@ def test_setpoints_shift_and_keep_room_difference():
     assert Setpoints.from_dict(sp.to_dict()).comfort(bed) == 19.5
 
 
-def test_setpoints_never_lower_baseline_below_safety():
+def test_house_target_leaves_baselines():
     from core import Setpoints, Settings
-    sp = Setpoints(reference=19.0, house=10.0)
-    s = sp.settings(Settings())
-    assert s.baseline_night == s.safety == 12.0
+    for house in (10.0, 22.0):
+        s = Setpoints(reference=19.0, house=house).settings(Settings())
+        assert (s.baseline_day, s.baseline_night, s.safety) == (Settings().baseline_day, Settings().baseline_night, Settings().safety)
 
 
 def test_calibration_summary_counts_down():
@@ -722,6 +752,9 @@ def test_hybrid_single_room_uses_heater_instead_of_boiler():
     both = make_plan([(hyb, RoomSnapshot(temp=16.0, occupied=True, valve_open=False)), (gas, RoomSnapshot(temp=17.0, occupied=True, valve_open=False))],
                      _house(), Settings())
     assert both.boiler_on and both.rooms["h"].heater_on is False and both.rooms["h"].open_valve is True
+    blocked = make_plan([(hyb, RoomSnapshot(temp=16.0, occupied=True, valve_open=False, heater_blocked=True)),
+                         (gas, RoomSnapshot(temp=19.5, valve_open=False))], _house(), Settings())
+    assert blocked.boiler_on and blocked.rooms["h"].open_valve is True  # its heater is held off: gas instead
 
 
 # ---------- consumption: meter split with learned rates ----------
@@ -784,7 +817,19 @@ def test_meter_restart_and_cost_at_the_rate_when_used():
     for v in (41.0, 40.9, 42.0, 0.5, 1.5):
         st = meter_step(*st, v)
     start, last, carry = st
-    assert carry + last - start == 3.0
+    assert carry + last - start == 3.5  # 2 before the reset, then 1.5 counted from zero
+    # A daily total that resets late: the new day starts on yesterday's 3.0, the first fresh value is 1.6.
+    st = meter_step(None, None, 0.0, 3.0)
+    for v in (1.6, 2.5, 4.2):
+        st = meter_step(*st, v)
+    start, last, carry = st
+    assert carry + last - start == 4.2
+    # A lifetime meter revised a little below the day's first reading: still a revision.
+    st = meter_step(None, None, 0.0, 12340.0)
+    for v in (12339.9, 12341.0):
+        st = meter_step(*st, v)
+    start, last, carry = st
+    assert carry + last - start == 1.0
     c = Cost()
     assert c.add(10.0, 0.06) == 0.6 and c.add(15.0, 0.10) == 1.1 and c.add(15.0, 0.5) == 1.1
 

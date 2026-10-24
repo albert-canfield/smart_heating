@@ -88,6 +88,7 @@ class RoomSnapshot:
     override: Override = Override.AUTO
     valve_open: bool | None = None
     heater_on: bool | None = None
+    heater_blocked: bool = False  # its electric heater is held off by a safety check
     prev_calling: bool = False
     opening: str | None = None  # "door" or "window" to outside, open for at least a minute
     recovering_min: float = 0.0  # minutes left waiting for the room to recover after it closed

@@ -10,7 +10,7 @@
  *   hide_title: false     # optional
  */
 
-const CARD_VERSION = "0.15.4";  // keep in step with const.py VERSION (tests/test_card.py checks)
+const CARD_VERSION = "0.15.5";  // keep in step with const.py VERSION (tests/test_card.py checks)
 
 const STATE_LABEL = {
   approved: "Heating",
@@ -114,6 +114,11 @@ const STATUS_SENTENCE = {
 };
 
 class SmartHeatingCard extends HTMLElement {
+  connectedCallback() {  // re-attached (dashboard re-layout): restart the countdown and the confirm timeout
+    if (this._confirmStart) this._armConfirm();
+    if (this._hass && this._config) { this._sig = null; this.hass = this._hass; }
+  }
+
   disconnectedCallback() {
     clearInterval(this._ocTimer);
     clearTimeout(this._confirmTimer);
@@ -132,9 +137,11 @@ class SmartHeatingCard extends HTMLElement {
     this._energyOpen = false;
     this._hourly = null;  // today's heating kWh per hour, fetched while the breakdown is open
     this._hourlyAt = 0;
-    this._pending = {};
-    this._timers = {};
+    this._pending = this._pending || {};  // a stepper press in flight survives a new config
+    this._timers = this._timers || {};
     this._confirmStart = false;
+    this._sig = null;  // Home Assistant calls this on a live card too (editor preview): show the new config now
+    if (this._hass) this.hass = this._hass;
   }
 
   static getConfigForm() {
@@ -168,10 +175,16 @@ class SmartHeatingCard extends HTMLElement {
   }
 
   set hass(hass) {
+    const prev = this._hass;
     this._hass = hass;
+    if (this._energyOpen) queueMicrotask(() => this._fetchHourly());  // after the model below is in place
+    // Home Assistant sets hass on every state change in the house: skip unless one of ours changed
+    const states = this._ownIds(hass).map((id) => hass.states[id]);
+    if (this._sig != null && prev && hass.entities === prev.entities && hass.devices === prev.devices && hass.config === prev.config
+      && states.length === this._states?.length && states.every((s, i) => s === this._states[i])) return;
+    this._states = states;
     const model = this._model();
     const sig = JSON.stringify(model);
-    if (this._energyOpen) queueMicrotask(() => this._fetchHourly());  // after the model below is in place
     if (sig === this._sig) return;
     this._sig = sig;
     this._data = model;
@@ -180,15 +193,24 @@ class SmartHeatingCard extends HTMLElement {
 
   /* ---------- discovery ---------- */
 
+  _ownIds(hass) {  // this integration's entity ids, worked out once per entity registry
+    const regs = hass.entities || {};
+    if (this._idsFor !== regs) {
+      this._idsFor = regs;
+      this._ids = Object.keys(regs).filter((id) => regs[id].platform === "smart_heating");
+    }
+    return this._ids;
+  }
+
   _model() {
     const hass = this._hass;
     const regs = hass.entities || {};
     const byDevice = {};
-    for (const [id, reg] of Object.entries(regs)) {
-      if (reg.platform !== "smart_heating") continue;
+    for (const id of this._ownIds(hass)) {
       const st = hass.states[id];
       if (!st) continue;
-      (byDevice[reg.device_id] = byDevice[reg.device_id] || []).push(st);
+      const dev = regs[id].device_id;
+      (byDevice[dev] = byDevice[dev] || []).push(st);
     }
 
     const house = {};
@@ -386,7 +408,11 @@ class SmartHeatingCard extends HTMLElement {
     clearTimeout(this._timers[entity]);
     this._timers[entity] = setTimeout(() => {
       this._call("number", "set_value", { entity_id: entity, value: v });
-      setTimeout(() => { delete this._pending[entity]; this._sig = null; this.hass = this._hass; }, 1500);
+      this._timers[entity] = setTimeout(() => {  // the next press clears this: it must not wipe a newer value
+        if (this._pending[entity] === v) delete this._pending[entity];
+        this._sig = null;
+        this.hass = this._hass;
+      }, 1500);
     }, 700);
     this._render();
   }
@@ -397,6 +423,11 @@ class SmartHeatingCard extends HTMLElement {
 
   _setOverride(entity, option) {
     this._call("select", "select_option", { entity_id: entity, option });
+  }
+
+  _armConfirm() {
+    clearTimeout(this._confirmTimer);
+    this._confirmTimer = setTimeout(() => { this._confirmStart = false; this._render(); }, 10000);
   }
 
 
@@ -431,8 +462,8 @@ class SmartHeatingCard extends HTMLElement {
     const lo = comfortVals.length ? Math.min(...comfortVals) : null;
     const hi = comfortVals.length ? Math.max(...comfortVals) : null;
     const range = lo == null ? "" : lo === hi ? `${lo.toFixed(1)}°` : `${lo.toFixed(1)} to ${hi.toFixed(1)}°`;
-    const tip = `Moves every room together. Rooms in use heat to their own target (now ${range}). `
-      + `Empty rooms stay at ${fmt(d.baseDay)} by day and ${fmt(d.baseNight)} at night. Fine-tune a room by tapping it.`;
+    const tip = `Moves the in-use target of every room together (now ${range}). `
+      + `Empty rooms stay at ${fmt(d.baseDay)} by day and ${fmt(d.baseNight)} at night, whatever the house target. Fine-tune a room by tapping it.`;
     return this._stepper(d.targetEntity, d.target, "House target", "house", tip);
   }
 
@@ -543,9 +574,30 @@ class SmartHeatingCard extends HTMLElement {
   /* ---------- render ---------- */
 
   _render() {
-    const d = this._data;
+    clearInterval(this._ocTimer);  // _bind starts it again when there is a countdown
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    const focus = this._focusKey();
+    this._paint();
+    this._refocus(focus);
+  }
 
+  // The whole shadow DOM is rebuilt on each render: keep keyboard focus on the same control.
+  _focusKey() {
+    const el = this.shadowRoot.activeElement;
+    if (!el) return null;
+    const attrs = [...el.attributes].filter((a) => a.name.startsWith("data-") && a.name !== "data-value").map((a) => [a.name, a.value]);
+    return attrs.length ? { tag: el.localName, attrs } : null;
+  }
+
+  _refocus(key) {
+    if (!key) return;
+    const el = [...this.shadowRoot.querySelectorAll(`${key.tag}[${key.attrs[0][0]}]`)]
+      .find((e) => key.attrs.every(([n, v]) => e.getAttribute(n) === v));
+    el?.focus({ preventScroll: true });
+  }
+
+  _paint() {
+    const d = this._data;
     if (!d.rooms.length) {
       this.shadowRoot.innerHTML = `${STYLE}<ha-card><div class="empty">${d.starting
         ? "Smart Heating is starting. The card fills in as soon as it is ready."
@@ -567,7 +619,7 @@ class SmartHeatingCard extends HTMLElement {
       <ha-card>
         <header>
           <div class="title">
-            <h2>${this._titleHtml() || esc(this._config.title || "Smart Heating")}</h2>
+            ${this._config.hide_title ? "" : `<h2>${this._titleHtml()}</h2>`}
             <p class="status s-${d.status}">${statusDot(d)}${esc(statusText)}${indicators(d)}${this._badge(d)}${this._winBadge(d)}${this._alertBtn(d)}</p>
           </div>
         </header>
@@ -632,12 +684,12 @@ class SmartHeatingCard extends HTMLElement {
     this.shadowRoot.innerHTML = `${STYLE}
       <ha-card class="mini" style="--h:${hue}">
         <div class="tint" aria-hidden="true"></div>
-        <div class="summary" data-expand role="button" tabindex="0" aria-expanded="${ex}" aria-label="${ex ? "Collapse" : "Expand"} heating details">
+        <div class="summary">
           <div class="hdr">
             ${this._titleHtml()}
             ${this._alertBtn(d)}
             <span class="st s-${d.status}">${statusDot(d)}<span class="stt">${esc(statusText)}</span></span>
-            <span class="chev ${ex ? "up" : ""}" aria-hidden="true">${CHEV}</span>
+            <button class="chev ${ex ? "up" : ""}" data-expand aria-expanded="${ex}" aria-label="${ex ? "Collapse" : "Expand"} heating details">${CHEV}</button>
           </div>
           <div class="row1">
             <span class="big">${d.houseTemp != null ? d.houseTemp.toFixed(1) : "–"}<small>°</small></span>
@@ -675,15 +727,13 @@ class SmartHeatingCard extends HTMLElement {
 
   _bind() {
     const root = this.shadowRoot;
-    const toggle = (e) => {
-      if (e.target.closest("button")) return;
+    // The chevron is the keyboard and screen reader control; a tap anywhere else on the summary does the same
+    root.querySelector(".summary")?.addEventListener("click", (e) => {
+      if (e.target.closest("button:not([data-expand])")) return;
       this._expanded = !this._expanded;
-      if (!this._expanded) { this._open = null; this._showLog = false; }
+      if (!this._expanded) { this._open = null; this._showLog = false; this._energyOpen = false; }
       this._render();
-    };
-    const sum = root.querySelector("[data-expand]");
-    sum?.addEventListener("click", toggle);
-    sum?.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(e); } });
+    });
     root.querySelectorAll("[data-tip]").forEach((b) => b.addEventListener("click", (e) => {
       e.stopPropagation();
       this._tip = this._tip === b.dataset.tip ? null : b.dataset.tip;
@@ -721,8 +771,7 @@ class SmartHeatingCard extends HTMLElement {
     }));
     root.querySelector("[data-start]")?.addEventListener("click", () => {
       this._confirmStart = true;  // ask first; cancels itself after 10 s
-      clearTimeout(this._confirmTimer);
-      this._confirmTimer = setTimeout(() => { this._confirmStart = false; this._render(); }, 10000);
+      this._armConfirm();
       this._render();
     });
     root.querySelectorAll("[data-confirm]").forEach((b) => b.addEventListener("click", () => {
@@ -744,9 +793,8 @@ class SmartHeatingCard extends HTMLElement {
       if (b.dataset.oc === "all") this._call("smart_heating", "one_cycle", { all_rooms: true });
       else this._setMode("off");
     }));
-    clearInterval(this._ocTimer);
     const cd = root.querySelector("[data-countdown]");
-    if (cd) this._ocTimer = setInterval(() => { cd.textContent = fmtLeft(cd.dataset.countdown); }, 1000);
+    if (cd && this.isConnected) this._ocTimer = setInterval(() => { cd.textContent = fmtLeft(cd.dataset.countdown); }, 1000);
     root.querySelectorAll("[data-more]").forEach((el) => {
       const open = (e) => {
         e.stopPropagation();
@@ -784,7 +832,7 @@ class SmartHeatingCard extends HTMLElement {
     const avg = this._data.floorTemps[floor];
     return `
       <div class="cfloor">
-        <div class="clabel">${this._floorLabel(floor)}${avg != null ? `<span>${avg.toFixed(1)}°</span>` : ""}</div>
+        <div class="clabel"><span class="fname" title="${this._floorLabel(floor)}">${this._floorLabel(floor)}</span>${avg != null ? `<span>${avg.toFixed(1)}°</span>` : ""}</div>
         <div class="chips">
           ${rooms.map((r) => this._chip(r)).join("")}
         </div>
@@ -1217,8 +1265,9 @@ const STYLE = `<style>
   }
   ha-card { padding: 16px 16px 12px; }
   header { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; justify-content: space-between; margin-bottom: 14px; }
-  h2 { margin: 0; font-size: 1.25rem; font-weight: 500; line-height: 1.2; color: var(--primary-text-color); }
-  .status { margin: 4px 0 0; font-size: .875rem; color: var(--sh-muted); display: flex; gap: 8px; align-items: center; }
+  .title { min-width: 0; }
+  h2 { margin: 0; font-size: 1.25rem; font-weight: 500; line-height: 1.2; color: var(--primary-text-color); display: flex; min-width: 0; overflow: hidden; }
+  .status { margin: 4px 0 0; font-size: .875rem; color: var(--sh-muted); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
   .status.s-heating { color: var(--sh-heat); }
   .status.s-fault { color: var(--sh-fault); }
   .monitor { font-size: .75rem; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--sh-line); color: var(--sh-muted); }
@@ -1233,17 +1282,17 @@ const STYLE = `<style>
   .roof polyline { fill: none; stroke: var(--sh-house); stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
   .floor { display: grid; grid-template-columns: 52px 1fr; border-left: var(--sh-house-w) solid var(--sh-house); border-right: var(--sh-house-w) solid var(--sh-house); border-top: 1px solid var(--sh-floor); }
   .section .floor:first-of-type { border-top: 0; }
-  .floor-name { padding: 10px 0 0 8px; font-size: .75rem; color: var(--sh-muted); display: flex; flex-direction: column; gap: 2px; }
+  .floor-name { padding: 10px 0 0 8px; font-size: .75rem; color: var(--sh-muted); display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; hyphens: auto; }
   .floor-name span { font-size: .8125rem; color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
   .ground-line { height: 0; border-top: var(--sh-house-w) solid var(--sh-house); }
   .chouse .roof { height: 14px; }
   .chouse .compact { border: 0 solid var(--sh-house); border-width: 0 var(--sh-house-w); padding: 2px 8px; }
 
   .rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; padding: 8px 8px 8px 0; }
-  .room { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 2px;
+  .room { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 2px; min-width: 0;
           padding: 8px 10px 8px 12px; border-radius: 6px; border-left: 3px solid transparent;
           background: color-mix(in srgb, var(--primary-text-color) 4%, transparent); min-height: 72px; }
-  .room .name { font-size: .8125rem; color: var(--primary-text-color); display: flex; align-items: center; gap: 6px; }
+  .room .name { font-size: .8125rem; color: var(--primary-text-color); display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
   .opn { display: inline-flex; flex: none; width: 12px; height: 12px; color: var(--sh-muted); }
   .opn.on { color: var(--warning-color, #f5a524); }
   .opn svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -1349,6 +1398,8 @@ const STYLE = `<style>
   .cfloor:first-child { border-top: 0; }
   .clabel { font-size: .75rem; color: var(--sh-muted); display: flex; flex-direction: column; padding-top: 5px; line-height: 1.25; }
   .clabel span { color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
+  .clabel .fname { color: inherit; margin-right: -8px; overflow-wrap: anywhere; hyphens: auto;  /* may use the gap: "Ground" stays whole */
+                   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
   .chip { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
           height: 30px; padding: 0 9px; border-radius: 15px; max-width: 100%;
@@ -1460,7 +1511,6 @@ const STYLE = `<style>
   .row1 .sub { margin-top: 2px; }
   h2 .ttl { font-size: 1.1rem; color: var(--primary-text-color); }
   h2 .ttl .logo svg { width: 22px; height: 22px; }
-  .summary:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 4px; border-radius: 8px; }
   .big { font-size: 2.25rem; font-weight: 400; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
   .big small { font-size: 1.1rem; vertical-align: top; margin-left: 1px; color: var(--sh-muted); }
   .mid { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
@@ -1468,10 +1518,11 @@ const STYLE = `<style>
   .stt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .st.s-heating { color: var(--sh-heat); }
   .st.s-fault { color: var(--sh-fault); }
-  .sub { font-size: .75rem; color: var(--sh-muted); display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .sub { font-size: .75rem; color: var(--sh-muted); display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; white-space: nowrap; min-width: 0; }
   .sub em { font-style: normal; padding: 0 6px; border-radius: 8px; border: 1px solid var(--sh-line); flex: none; }
   .sub .phase { overflow: hidden; text-overflow: ellipsis; }
-  .chev { color: var(--sh-muted); display: inline-flex; padding: 2px; }
+  .chev { all: unset; cursor: pointer; flex: none; color: var(--sh-muted); display: inline-flex; padding: 2px; border-radius: 6px; }
+  .chev:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 1px; }
   .chev svg { width: 20px; height: 20px; }
   .chev svg, .chev2 svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .2s; }
   .chev.up svg, .chev2.up svg { transform: rotate(180deg); }

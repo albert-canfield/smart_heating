@@ -59,9 +59,10 @@ _RANK = {Level.SAFETY: 0, Level.BASELINE: 1, Level.COMFORT: 2, Level.MANUAL: 3}
 def _eligible(snap: RoomSnapshot, house: HouseSnapshot) -> tuple[bool, str]:
     """Is the room in use (comfort applies)?"""
     if house.night:
-        # Night: comfort only where lights are on (going to bed, reading).
-        if snap.lights_on:
-            return True, "night, lights on"
+        # Night: the heating rests at the night baseline. Only the room's own schedule (or Heat now, a separate
+        # request) brings comfort; presence and lights don't (owner, 24 Oct 2026).
+        if snap.scheduled:
+            return True, "night, scheduled"
         return False, ""
     if snap.occupied:
         return True, "occupied"

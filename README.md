@@ -77,7 +77,7 @@ Smart Heating heats from day one with sensible defaults and learns your home in 
 
 # Documentation
 
-Version 0.15.4. How it starts:
+Version 0.15.5. How it starts:
 
 1. **Heating from day one** (or **Watching** if you picked *Watch first*: it decides and logs, never touches the boiler or TRVs, until you tap **Start heating** and confirm).
 2. **Learning in the background**: each room's heat-loss time constant, free-heat gain and warm-up rate, from normal life. Heating decisions don't wait for it.
@@ -102,7 +102,7 @@ Only real radiator heat counts: burns for hot water only (cylinder with the heat
 | **Off** | Stops everything: One Cycle, Heat now in every room, a running heat test, and the boiler at once. Frost protection stays on. |
 | **One Cycle** | Heats the rooms in use (and any you pick with Heat now) to their targets once, then switches to Off. If nothing needs heat, the card shows why with a 3-minute countdown and offers **Heat all rooms below target** (empty rooms too, from any shortfall). |
 | **Auto** | Heats each room when it needs it, firing the boiler only when it's worth it. This is the everyday mode. |
-| **Heat now** (a room) | Heats that room from any shortfall. While Off it starts One Cycle, which ends when the room reaches its target. Works on mild days and while away. |
+| **Heat now** (a room) | Heats that room from any shortfall. While Off it starts One Cycle, which ends when the room reaches its target. Works on mild days, at night and while away, and survives a restart until it expires. |
 
 **Season gate** (outdoor day mean, last 12 h plus next 12 h; 15.5°C by default, the usual UK figure): below it is heating season and every room is heated normally. On milder days automatic heating needs strong evidence, while what you ask for always heats:
 
@@ -113,7 +113,7 @@ Only real radiator heat counts: burns for hot water only (cylinder with the heat
 | Room in use | heat (from 0.5° below) | only if cold: 1.5° below and not warming by itself | heat (from 0.5° below) |
 | Empty room | heat | wait | wait |
 
-Once mild, it stays mild until the mean drops 0.5° below the gate, so it doesn't flip back and forth. The log says which rule allowed or blocked each room.
+A cold room already heating carries on until it is within 0.5° of its target, instead of stopping halfway. Once mild, it stays mild until the mean drops 0.5° below the gate, so it doesn't flip back and forth. The log says which rule allowed or blocked each room.
 
 ### How energy is shared out
 
@@ -126,7 +126,7 @@ The meter is the truth for the total; run time decides how it is shared; the rat
 ### Setting temperatures
 
 On the card, when the mode is One cycle or Auto:
-- **House target** (− 19.0 +) moves every room together, plus the day and night baselines. The frost floor never moves.
+- **House target** (− 19.0 +) moves the in-use target of every room together. The day and night baselines (empty rooms) and the frost floor stay as configured; the house target can't go below the day baseline.
 - Tap a room for its own **Target when in use**. It keeps its difference from the house when the house target moves. Rooms without a TRV still ask for heat, but their radiator can't be shut.
 
 Both are also entities (`number.smart_heating_house_target`, `number.<room>_target`) for automations. A new comfort set in a room's Reconfigure form replaces the card setting.
@@ -160,6 +160,8 @@ Combinations that work:
 
 Thermostat style: **Setpoint** (recommended: it gets the target and regulates, so it stays sensible if Home Assistant stops) or **On / off** (heat at 25° or off).
 
+TRVs always stay in heat mode. An open TRV is set to the room target + 3° (TRV open offset), so it still caps the room if Home Assistant stops; a closed one to 5°, so it still guards against frost. A TRV found in mode off is switched back to heat. **Open TRVs fully** (Configure, Advanced) sets an open TRV to its max instead (30° on most), for TRVs whose own sensor by the hot radiator closes them early, such as the Kasa KE100. There is then no room cap if Home Assistant stops while the boiler runs: keep an auto-off on the boiler relay.
+
 Electric heaters: a smart plug is switched on/off; a smart heater gets the room target and hvac off when not needed. Enter the heater's power (e.g. 2000 W) and optional eco power (e.g. 1000 W, used when a smart heater reports an eco preset). If the plug or heater has its own power sensor it is found automatically and measured power is used instead. Sensors: electricity today (kWh, with a projection to midnight), cost today, and per-room energy today.
 
 **Doors and windows to outside.** Give a room the contact sensors on its doors and windows that open to outside. While one is open for more than a minute the room pauses: its TRV closes (or its heater goes off) and it does not ask for heat; frost protection still can. After it closes, the room waits up to 20 minutes for heat from the rest of the house before it may start the boiler, because a short opening (the school run, a delivery) usually comes back on its own. It only waits when the drop was the opening's doing (the room wasn't already asking for heat), and stops waiting once it is back where it was, or if it is still falling 10 minutes after closing. The drop is left out of learning, a small door or window icon on the room shows it (hover for how long), whoever is home gets a phone alert if one stays open 30 minutes in the heating season, and the **Close windows** phone alert is skipped when the advised rooms' window sensors all read shut. How long each room took to recover is kept in diagnostics, to tune the wait per room later. A room with no window or door to outside (an inner bathroom): tick **This room has no window or door to outside** in its settings, just above the sensors. It then gets no window advice, alerts or window icons, and its door and window sensors are ignored.
@@ -189,7 +191,7 @@ Other fallbacks:
 
 Brand icon and logo ship in `brand/` (shown by Home Assistant 2026.3 and later).
 
-The dashboard card ships inside the integration, so one HACS install covers both. Smart Heating serves the card itself and keeps one dashboard resource pointing at it, updated to the new version after each update, so every dashboard loads it. If dashboard resources are kept in YAML, add `/smart_heating/smart-heating-card.js` (type module) yourself. The browser console shows **Smart Heating 0.15.4** when the card loads. After an update, a normal browser refresh picks up the new card. Upgrading from 0.14.1 to 0.15.3, which kept a copy of the card in `www/smart_heating/`: the resource is moved back automatically, and you can delete that folder.
+The dashboard card ships inside the integration, so one HACS install covers both. Smart Heating serves the card itself and keeps one dashboard resource pointing at it, updated to the new version after each update, so every dashboard loads it. If dashboard resources are kept in YAML, add `/smart_heating/smart-heating-card.js` (type module) yourself. The browser console shows **Smart Heating 0.15.5** when the card loads. After an update, a normal browser refresh picks up the new card. Upgrading from 0.14.1 to 0.15.3, which kept a copy of the card in `www/smart_heating/`: the resource is moved back automatically, and you can delete that folder.
 
 ## Set up
 
@@ -208,7 +210,7 @@ Everything can be changed later: **Reconfigure** repeats the wizard; **Configure
 
 **Setup checks** (Settings, Repairs): a hot water sensor that is really the boiler's own switch or running sensor (it is then ignored for hot water priority and the gas split; the wizard no longer accepts it), other automations that switch the heating while Smart Heating heats, a boiler running sensor that doesn't turn on within 20 minutes of a heating call, and a room with electric heaters that has had no temperature reading for 30 minutes.
 
-**Night period**: while the night schedule is on, the baseline drops to the night value (15°C) and comfort heat only goes to rooms with lights on or a manual "Heat now". Bedroom evening pre-heat comes from each room's own comfort schedule.
+**Night period**: while the night schedule is on, rooms stay at the night baseline (15°C). Comfort heat only comes from a room's own schedule or **Heat now**; presence, media and lights don't count at night, as people sleep with a sensor or a night light on. Bedroom evening pre-heat comes from each room's own comfort schedule.
 
 **Frost protection** is the safety floor (12°C default, adjustable down to 5°C). It is always on while Smart Heating is in control: in Off, on mild days and while away it still fires the boiler if any room drops below it. There is deliberately no switch to disable it. In Watch mode Smart Heating switches nothing at all, so frost protection then relies on your existing heating.
 
@@ -227,7 +229,7 @@ For each area it picks up: the area's own temperature and humidity sensors (Sett
 | Humidity sensor | optional, pre-filled; used for window and damp advice |
 | TRVs | pre-filled with the area's `climate` entities; empty = a radiator without a valve, always open while the boiler runs |
 | Can switch the boiler on | on by default; off for an always-open radiator such as a bypass in the hall: it warms whenever another room calls, but never starts the boiler by itself (frost protection and Heat now still can) |
-| Presence sensors, lights, media players | pre-filled from the area. When a room is in use by day (night: see Night period): a presence sensor decides (on for 5 min, until 20 min after it goes off; a media player playing counts the same). With no presence sensor the lights do: in use while one is on and for 30 min after it goes off. With neither, tap **Heat now** on the card (or use a schedule) |
+| Presence sensors, lights, media players | pre-filled from the area. When a room is in use by day (night: see Night period): a presence sensor decides (in use after 1 min on, until 20 min after it goes off; a media player playing counts the same; a motion sensor needs two triggers within 10 min, or 5 min on, so a walk-through doesn't count). With no presence sensor the lights do: in use while one is on and for 30 min after it goes off. With neither, tap **Heat now** on the card (or use a schedule) |
 | Doors and windows to outside | contact sensors; window sensors in the area are pre-filled, add outside doors by hand (see below) |
 | This room has no window or door to outside | for a room like an inner bathroom: no window advice, alerts or icons, and the door and window sensors are ignored |
 | Electric heaters, Heater power, Heater eco power | electric and hybrid homes (or a room that already has heaters); see below |
@@ -237,7 +239,7 @@ For each area it picks up: the area's own temperature and humidity sensors (Sett
 
 Room devices created by Smart Heating are placed in their area, so they appear on the area's page.
 
-**Configure** pages: *Temperatures & Night* (baseline day 17°C, night 15°C, night times, safety 12°C, season gate 15.5°C, override length), *Energy Prices* (gas unit price, boiler kW for estimates, electricity unit price), *Notifications* (see below), *Relearn Rooms* (clear what chosen rooms have learned, asked to confirm), *Advanced* (hysteresis, coasting, mild-day margin 1.5°C, boiler min run/off, TRV setpoints, hot water pause). Pages only show what your heating type uses.
+**Configure** pages: *Temperatures & Night* (baseline day 17°C, night 15°C, night times, safety 12°C, season gate 15.5°C, override length), *Energy Prices* (gas unit price, boiler kW for estimates, electricity unit price), *Notifications* (see below), *Relearn Rooms* (clear what chosen rooms have learned, asked to confirm), *Advanced* (hysteresis, coasting, mild-day margin 1.5°C, boiler min run/off, TRV setpoints, open TRVs fully, hot water pause). Pages only show what your heating type uses.
 
 **Notifications** (Configure → Notifications): pick one or more **people**. Alerts go to the Home Assistant app on each person's phone, found from the person's device trackers. Learning finished and boiler problems go to everyone; window advice only to people at home at the time, so whoever is in gets it. **Other notify services** (a wall tablet, a Telegram chat) get every alert. **Window alerts** can be turned off here; alerts to open windows are capped at 8 a day and never sent at night, close reminders can come at any time, and a **Close windows** goes to the phones that got the alert to open, home or not. A door or window to outside left open 30 minutes in the heating season alerts whoever is home; an electric heater stopped by a safety check alerts everyone. After an update from a version with a single notify service, window alerts start once you save this page.
 
@@ -246,9 +248,9 @@ Room devices created by Smart Heating are placed in their area, so they appear o
 House device:
 - `select.smart_heating_mode`: `off` / `one_cycle` / `auto` (shown as Off, One Cycle, Auto)
 - service `smart_heating.one_cycle` (`all_rooms: true` heats every room below its target)
-- `switch.smart_heating_controller_enabled`: kill switch (turns the boiler off)
+- `switch.smart_heating_controller_enabled`: kill switch (turns the boiler off, stops commands on their way and a heat test)
 - `switch.smart_heating_monitor_only`: on = decide and log only
-- `number.smart_heating_house_target`: house target (shifts every room)
+- `number.smart_heating_house_target`: house target (shifts every room's in-use target)
 - services `smart_heating.heat_test` (start / stop, `ignore_automations`), `smart_heating.start_control` (leave watch mode) and `smart_heating.relearn` (`rooms: ["Master Bedroom"]`)
 - `sensor.smart_heating_status`: heating / idle / paused / waiting / off / away / fault / disabled / testing / starting (+ reason; from device states: `heating_rooms` (rooms really getting heat), `radiator_rooms` (a radiator while the boiler heats it: TRV open, or no TRV), `heater_rooms` (electric heaters that are on); from the plan: `wanted_rooms`, `calling_rooms`, `open_rooms` / `close_rooms` (valves being moved this minute); `boiler_called`, `boiler_hold_until` while boiler protection holds it back; `sensor_issues`: rooms whose thermometer is unavailable or hasn't reported for 3 h)
 - `sensor.smart_heating_decision_log`: latest decision; last 50 entries in attributes (not stored in the database)
@@ -326,7 +328,7 @@ Compact shows house temperature (always the house average), status with small in
 - More than 6 switches in 30 minutes locks boiler switching for 30 minutes (off is still allowed) and sends a notification.
 - Before a heat test, enabled automations that use the boiler control are listed; turn them off first.
 
-Safety nets: all room sensors unavailable means boiler off; frost floor always applies, even in Off; a Shelly auto-off timer on the boiler switch is still recommended in case HA itself stops.
+Safety nets: all room sensors unavailable means boiler and heaters off; a room without a reading keeps its TRV as it is; frost floor always applies, even in Off; a Shelly auto-off timer on the boiler switch is still recommended in case HA itself stops.
 
 ## Safety
 

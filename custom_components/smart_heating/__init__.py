@@ -69,6 +69,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: SmartHeatingConfigEntry)
     entry.runtime_data = coordinator
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)  # the entities restore them
+    except Exception:
+        await coordinator.async_stop()  # a failed setup gets no unload: drop the listeners and timers now
+        raise
     finally:
         coordinator.restored = True
     await coordinator.async_request_refresh()
@@ -91,4 +94,10 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def _async_reload(hass: HomeAssistant, entry: SmartHeatingConfigEntry) -> None:
+    """Options or rooms changed. Import areas changes many rooms at once: one reload covers them all."""
+    coordinator = getattr(entry, "runtime_data", None)
+    if coordinator is not None:
+        if coordinator.reload_queued:
+            return
+        coordinator.reload_queued = True
     await hass.config_entries.async_reload(entry.entry_id)

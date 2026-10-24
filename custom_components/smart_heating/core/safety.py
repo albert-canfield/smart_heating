@@ -32,14 +32,18 @@ class HeaterWatch:
 
     on_since: datetime | None = None
     temp_at_on: float | None = None
+    reading_since: datetime | None = None  # when temp_at_on was read (a heater can come on before the first reading)
     rest_until: datetime | None = None
     stuck_at: float | None = None  # reading when it was found stuck: cleared once the reading moves
 
     def update(self, now: datetime, heater_on: bool, temp: float | None) -> None:
         if heater_on and self.on_since is None:
             self.on_since, self.temp_at_on = now, temp
+            self.reading_since = now if temp is not None else None
+        elif heater_on and self.temp_at_on is None and temp is not None:
+            self.temp_at_on, self.reading_since = temp, now  # on before the first reading: the stuck check starts now
         elif not heater_on:
-            self.on_since = self.temp_at_on = None
+            self.on_since = self.temp_at_on = self.reading_since = None
         if self.stuck_at is not None and temp is not None and abs(temp - self.stuck_at) >= MOVED:
             self.stuck_at = None
 
@@ -71,7 +75,7 @@ def heater_block(now: datetime, w: HeaterWatch, temp: float | None, reported_at:
         return Block("stale", f"no temperature reading for {int(STALE.total_seconds() // 60)} min")
     if w.stuck_at is not None:
         return Block("stuck", f"the temperature did not move in {int(STUCK.total_seconds() // 60)} min with the heater on")
-    if heater_on and w.on_since and now - w.on_since >= STUCK and w.temp_at_on is not None \
+    if heater_on and w.reading_since and now - w.reading_since >= STUCK and w.temp_at_on is not None \
             and abs(temp - w.temp_at_on) < MOVED:
         w.stuck_at = temp
         return Block("stuck", f"the temperature did not move in {int(STUCK.total_seconds() // 60)} min with the heater on")

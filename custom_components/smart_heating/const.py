@@ -1,6 +1,6 @@
 """Constants for Smart Heating."""
 DOMAIN = "smart_heating"
-VERSION = "0.15.4"  # keep in sync with manifest.json (cache-busts the card)
+VERSION = "0.15.5"  # keep in sync with manifest.json (cache-busts the card)
 PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "number"]
 
 SUBENTRY_ROOM = "room"
@@ -98,6 +98,7 @@ OPT_BOILER_KW = "boiler_input_kw"
 OPT_NOTIFY = "notify_service"  # extra notify services (list; older versions: one string)
 OPT_NOTIFY_PEOPLE = "notify_people"  # people whose phone app gets alerts
 OPT_WINDOW_ALERTS = "window_alerts"  # phone alerts to open or close windows
+OPT_TRV_FULL_OPEN = "trv_full_open"  # open TRVs at their max (heat, 30 on most) instead of target + offset
 WINDOW_PUSH_MAX = 8  # window alerts per 24 h at most
 OPT_NIGHT_START = "night_start"
 OPT_NIGHT_END = "night_end"
@@ -114,7 +115,10 @@ DEFAULT_OVERRIDE_HOURS = 2.0
 
 UPDATE_INTERVAL_S = 60
 SENSOR_STALE_H = 3  # a room thermometer with no report for this long is flagged on the card (heating unchanged)
-SENSOR_REFRESH_S = 30  # a sensor change refreshes at once, then at most this often (each refresh writes to the recorder)
+SENSOR_REFRESH_S = 30  # measurements (temperatures, humidity, power, TRVs) refresh at most this often: they report every few seconds
+# Changes that need an answer at once (presence, lights, doors and windows, boiler, hot water, away): they are rare.
+FAST_DOMAINS = frozenset({"binary_sensor", "switch", "light", "media_player", "input_boolean", "schedule",
+                          "person", "device_tracker", "alarm_control_panel"})
 TRV_STAGGER_S = 3
 
 EVENT_DECISION = "smart_heating_decision"

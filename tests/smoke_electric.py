@@ -364,6 +364,19 @@ async def main() -> None:
     assert not [m for m in reported if "update listener" in m], reported
     print("reconfigure ok: house and room saved with our message, one reload each")
 
+    # Import areas changes many rooms at once: their update listener calls make one reload.
+    from types import SimpleNamespace as NS
+    from custom_components.smart_heating import _async_reload
+    done = []
+
+    async def fake_reload(eid):
+        await asyncio.sleep(0)
+        done.append(eid)
+    fake = NS(config_entries=NS(async_reload=fake_reload))
+    e = NS(entry_id="x", runtime_data=NS(reload_queued=False))
+    await asyncio.gather(*(_async_reload(fake, e) for _ in range(4)))
+    assert done == ["x"], done
+
     await c.async_stop(); await hass.async_stop()
     print("ELECTRIC OK")
 

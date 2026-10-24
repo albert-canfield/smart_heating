@@ -157,6 +157,11 @@ class WindowAdviceSensor(HouseEntity, SensorEntity):
 class HouseStatus(HouseEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = STATUSES
+    # Live values for the card, changing with every plan: kept out of the recorder (mode, away and such stay).
+    _unrecorded_attributes = frozenset({
+        "reason", "boiler_hold_until", "open_rooms", "close_rooms", "heating_rooms", "radiator_rooms",
+        "heater_rooms", "wanted_rooms", "calling_rooms", "sensor_issues",
+    })
 
     def __init__(self, coordinator) -> None:
         super().__init__(coordinator, "status")
@@ -275,6 +280,7 @@ class RoomNeed(RoomEntity, SensorEntity):
 class RoomDecisionSensor(RoomEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [v.value for v in Verdict]
+    _unrecorded_attributes = frozenset({"reason"})  # carries live temperatures
 
     def __init__(self, coordinator, room_id: str) -> None:
         super().__init__(coordinator, room_id, "decision")
@@ -401,6 +407,7 @@ class RoomPredicted(RoomEntity, SensorEntity):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_suggested_display_precision = 1
+    _unrecorded_attributes = frozenset({"outdoor_used", "hours_to_baseline", "predicted_8h"})  # move with every reading
 
     def __init__(self, coordinator, room_id) -> None:
         super().__init__(coordinator, room_id, "predicted_2h")

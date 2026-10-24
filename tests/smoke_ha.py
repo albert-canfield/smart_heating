@@ -227,11 +227,19 @@ async def main() -> None:
     hass.states.async_set("sensor.living_t", "18.1")
     hass.states.async_set("sensor.hall_t", "16.0")
     c.mode = Mode.AUTO
+    heating_was = hass.states.get("switch.heating").state
+    hass.states.async_set("switch.heating", "off")  # not heating yet: a new mild-day request needs a clear need
     await c.async_refresh()
     v = {r: (d.verdict.value, d.reason) for r, d in c.data.rooms.items()}
     print("mild day, auto:", v)
     assert v["living"][0] == "vetoed" and v["living"][1].endswith("not cold enough")
     assert v["hall"][0] == "vetoed" and v["hall"][1].endswith("empty room")
+    # Already heating it: it carries on until within 0.5 deg of target (no 10 min burns), whatever its trend.
+    hass.states.async_set("switch.heating", "on")
+    hass.states.async_set("climate.living_trv", "heat", {"temperature": 22})
+    await c.async_refresh()
+    assert c.data.rooms["living"].verdict.value == "approved" and "still heating" in c.data.rooms["living"].reason, c.data.rooms["living"]
+    hass.states.async_set("switch.heating", heating_was)
     await c.async_set_mode(Mode.ONE_CYCLE)
     v = {r: (d.verdict.value, d.reason) for r, d in c.data.rooms.items()}
     print("mild day, one cycle:", v)
@@ -242,11 +250,11 @@ async def main() -> None:
     hass.states.async_set("sensor.living_t", "19.5")
     hass.states.async_set("sensor.hall_t", "18.2")
 
-    # Setpoints: house target shifts every room and the baseline; rooms keep their difference.
+    # Setpoints: house target shifts every room's in-use target; rooms keep their difference; baselines stay.
     assert c.setpoints.house == 19.0, c.setpoints.house
     await c.async_set_house_target(20)
     assert c.room_comfort(c.rooms["living"]) == 20.0 and c.room_comfort(c.rooms["hall"]) == 18.0
-    assert c.effective_settings.baseline_day == 18.0
+    assert c.effective_settings.baseline_day == c.settings.baseline_day == 17.0, "baselines don't follow the house target"
     await c.async_set_room_target("living", 21)
     await c.async_set_house_target(19)
     assert c.room_comfort(c.rooms["living"]) == 20.0, c.room_comfort(c.rooms["living"])
@@ -498,16 +506,47 @@ async def main() -> None:
     real_later = sh_coord.async_call_later
     sh_coord.async_call_later = lambda hass, delay, action: scheduled.append(delay) or (lambda: None)
     try:
+        temp = SimpleNamespace(data={"entity_id": "sensor.living_t"})
         for _ in range(3):
-            c._on_change(None)
+            c._on_change(temp)
         assert scheduled == [0.0], scheduled
         await c._change_refresh()
-        c._on_change(None)
+        c._on_change(temp)
         assert len(scheduled) == 2 and 29 < scheduled[1] <= 30, scheduled
         await c._change_refresh()
+        # Presence, lights, doors, boiler and hot water don't wait: they refresh at once, nothing scheduled.
+        refreshes, n_scheduled = [], len(scheduled)
+        real_request = c.async_request_refresh
+
+        def counted():  # counts the request as it is made
+            refreshes.append(1)
+            return asyncio.sleep(0)
+        c.async_request_refresh = counted
+        for eid in ("binary_sensor.bed_presence", "light.office", "switch.heating", "binary_sensor.back_door"):
+            c._on_change(SimpleNamespace(data={"entity_id": eid}))
+        c.async_request_refresh = real_request
+        assert len(refreshes) == 4 and len(scheduled) == n_scheduled, (refreshes, scheduled)
+        await hass.async_block_till_done()
     finally:
         sh_coord.async_call_later = real_later
     print("sensor changes: one refresh now, the next", round(scheduled[1]), "s later")
+
+    # Presence just switched on: the room is in use after JOIN_MIN, checked right then (not at the next minute).
+    bed = c.rooms["bed"]
+    bed.presence, bed.occupied = ["binary_sensor.bed_presence"], False
+    hass.states.async_set("binary_sensor.bed_presence", "on")
+    c._join_cancel = c._join_due = None
+    c._room_snapshot(bed, dt_util.utcnow())
+    assert not bed.occupied and c._join_due is not None
+    wait = (c._join_due - dt_util.utcnow()).total_seconds()
+    assert 50 < wait <= 61, wait
+    c._room_snapshot(bed, dt_util.utcnow() + timedelta(seconds=70))
+    assert bed.occupied, "in use one minute after presence"
+    if c._join_cancel:
+        c._join_cancel()
+    c._join_cancel = c._join_due = None
+    bed.presence, bed.occupied = [], False
+    print("presence: in use", round(wait), "s after it switched on")
 
     # A thermometer that can't be trusted is reported (card alert), heating unchanged.
     living = c.rooms["living"]
@@ -635,6 +674,40 @@ async def main() -> None:
     assert c._boiler_cmd_state is True and len(c._boiler_cmds) == 1 and "work again" in c.log[0]["message"]  # newest first
     print("boiler call failure:", [e["message"] for e in c.log if "Boiler command" in e["message"]])
 
+    # TRVs stay in heat mode: closed is the frost setpoint, a TRV left in mode off is switched back to heat.
+    # Open TRVs fully (option): heat at the TRV's max. A TRV in mode off counts as closed.
+    c.boiler_locked_until = None
+    plan = c.data
+    plan.rooms["living"].open_valve, plan.rooms["bed"].open_valve = True, False
+    hass.states.async_set("climate.living_trv", "heat", {"temperature": 5, "max_temp": 30, "hvac_modes": ["off", "heat"]})
+    hass.states.async_set("climate.bed_trv", "off", {"temperature": 5, "hvac_modes": ["off", "heat"]})
+    assert c._valve_open(c.rooms["bed"]) is False
+    c.trv_full_open = True
+    calls.clear()
+    await c._apply(plan)
+    trv_calls = [cl[2] for cl in calls if cl[0] == "climate"]
+    print("TRV commands:", trv_calls)
+    assert {"entity_id": "climate.living_trv", "temperature": 30.0} in trv_calls, trv_calls
+    assert {"entity_id": "climate.bed_trv", "temperature": 5, "hvac_mode": "heat"} in trv_calls, trv_calls
+    c.trv_full_open = False
+
+    # The kill switch during an apply: the TRV commands still to come are not sent (TRVs take seconds).
+    hass.states.async_set("climate.living_trv", "heat", {"temperature": 5})
+    hass.states.async_set("climate.bed_trv", "heat", {"temperature": 22})
+
+    async def record_then_kill(call):
+        await record(call)
+        c._control_gen += 1  # what the kill switch, Watching only or a mode change does
+    hass.services.async_register("climate", "set_temperature", record_then_kill)
+    calls.clear()
+    await c._apply(plan)
+    hass.services.async_register("climate", "set_temperature", record)
+    assert [cl[2]["entity_id"] for cl in calls] == ["climate.living_trv"], calls
+
+    # Heat now survives a restart.
+    await c.async_set_override("bed", Override.HEAT)
+    until = c.rooms["bed"].override_until
+
     # The log survives a restart.
     await c.async_stop()
     c2 = HeatingCoordinator(hass, entry)
@@ -642,6 +715,7 @@ async def main() -> None:
     assert any(e["message"].startswith("Relearning") for e in c2.log), "log kept across restarts"
     assert not c2.fresh, "a restart is not a new setup"
     assert c2.windows.advice.kind == "done" and c2.windows.next_dry is not None, "window advice kept across restarts"
+    assert c2.rooms["bed"].override is Override.HEAT and c2.rooms["bed"].override_until == until, "Heat now kept"
     # Deleting the integration deletes its stored data.
     import os
     from custom_components.smart_heating import async_remove_entry

@@ -15,7 +15,7 @@ from .models import (  # noqa: F401
 )
 from .climate import OutdoorModel, house_means  # noqa: F401
 from .need import evaluate_need  # noqa: F401
-from .occupancy import Signal, is_occupied  # noqa: F401
+from .occupancy import JOIN_MIN, Signal, is_occupied, join_at  # noqa: F401
 from .planner import make_plan, season_is_off  # noqa: F401
 from .trend import Trend  # noqa: F401
 from .energy import EnergyDay  # noqa: F401

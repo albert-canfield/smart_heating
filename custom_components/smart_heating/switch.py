@@ -46,7 +46,7 @@ class EnabledSwitch(_RestoredSwitch):
         return self.coordinator.enabled
 
     async def _set(self, value: bool, restoring: bool = False) -> None:
-        await self.coordinator.async_set_enabled(value)
+        await self.coordinator.async_set_enabled(value, restoring=restoring)
 
 
 class MonitorOnlySwitch(_RestoredSwitch):

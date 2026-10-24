@@ -27,8 +27,10 @@ def meter_step(start: float | None, last: float | None, carry: float, value: flo
         return value, value, carry
     if value >= last:
         return start, value, carry
-    if value < last / 2:  # restarted: keep what was counted, count again from here
-        return value, value, carry + last - start
+    if value < last / 2 or value < start * 0.98:
+        # Restarted, also a daily total that resets after midnight (below the day's first reading, which a
+        # revision can't reach): keep what was counted; the new reading is all use since the reset.
+        return 0.0, value, carry + last - start
     return start, last, carry  # a small drop is a revised reading: ignore it
 
 

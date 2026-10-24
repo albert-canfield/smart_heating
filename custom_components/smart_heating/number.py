@@ -29,10 +29,14 @@ class _Target(NumberEntity):
 
 
 class HouseTarget(HouseEntity, _Target):
-    """Shifts every room's comfort and the baselines together."""
+    """Shifts every room's in-use comfort together; never below the day baseline (empty rooms stay there anyway)."""
 
     def __init__(self, coordinator) -> None:
         super().__init__(coordinator, "house_target")
+
+    @property
+    def native_min_value(self) -> float:
+        return max(SETPOINT_MIN, self.coordinator.settings.baseline_day)
 
     @property
     def native_value(self) -> float:

@@ -1,9 +1,9 @@
-"""User setpoints: one house target that shifts every room, plus per-room fine-tuning.
+"""User setpoints: one house target that shifts every room's in-use comfort, plus per-room fine-tuning.
 
 The house target starts at a reference (the typical comfort of the main rooms).
-Moving it by +1 raises every room's comfort and the day/night baselines by 1.
-A room's own setpoint is stored relative to the house, so it keeps its
-difference when the house target moves. Safety (frost) never moves.
+Moving it by +1 raises every room's in-use comfort by 1. A room's own setpoint is
+stored relative to the house, so it keeps its difference when the house target moves.
+The day and night baselines (empty rooms) and safety (frost) never move with it.
 """
 from __future__ import annotations
 
@@ -57,14 +57,8 @@ class Setpoints:
         return replace(cfg, comfort=self.comfort(cfg))
 
     def settings(self, s: Settings) -> Settings:
-        off = self.offset
-        if not off:
-            return s
-        return replace(
-            s,
-            baseline_day=max(s.safety, s.baseline_day + off),
-            baseline_night=max(s.safety, s.baseline_night + off),
-        )
+        """The house target leaves the baselines and safety as configured (owner, 24 Oct 2026: only in-use moves)."""
+        return s
 
     def to_dict(self) -> dict:
         return {"reference": self.reference, "house": self.house, "rooms": self.rooms}

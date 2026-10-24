@@ -81,7 +81,9 @@ from .const import (
     OPT_NOTIFY,
     OPT_NOTIFY_PEOPLE,
     notify_list,
+    window_alerts_default,
     OPT_WINDOW_ALERTS,
+    OPT_TRV_FULL_OPEN,
     OPT_NIGHT_START,
     OPT_NIGHT_END,
     DEFAULT_NIGHT_START,
@@ -421,7 +423,7 @@ class SmartHeatingConfigFlow(_HouseSteps, ConfigFlow, domain=DOMAIN):
             subs = []
             for area_id in user_input.get("areas", []):
                 name = area_tools.area_name(self.hass, area_id) or area_id
-                data = _room_data_from_area(self.hass, area_id, self._type)
+                data = _room_data_from_area(self.hass, area_id, self._type, self._data)
                 if not (data.get(CONF_TEMP) or data.get(CONF_TRVS) or data.get(CONF_HEATERS)):
                     continue
                 subs.append(ConfigSubentryData(data=data, subentry_type=SUBENTRY_ROOM, title=name, unique_id=area_id))
@@ -535,6 +537,7 @@ class SmartHeatingOptionsFlow(OptionsFlow):
         if self._type != TYPE_ELECTRIC:
             fields[vol.Required("min_run_min", default=v("min_run_min", d.min_run_min))] = _num(0, 60, 1, "min")
             fields[vol.Required("min_off_min", default=v("min_off_min", d.min_off_min))] = _num(0, 60, 1, "min")
+            fields[vol.Required(OPT_TRV_FULL_OPEN, default=bool(v(OPT_TRV_FULL_OPEN, False)))] = sel.BooleanSelector()
             fields[vol.Required("trv_open_offset", default=v("trv_open_offset", d.trv_open_offset))] = _num(1, 6, 1, "°C")
             fields[vol.Required("trv_closed", default=v("trv_closed", d.trv_closed))] = _num(5, 16, 1, "°C")
         if self._type in (TYPE_TANK, TYPE_HYBRID):
@@ -555,7 +558,7 @@ class SmartHeatingOptionsFlow(OptionsFlow):
             vol.Optional(OPT_NOTIFY, description={"suggested_value": current}): sel.SelectSelector(
                 sel.SelectSelectorConfig(options=services, multiple=True, custom_value=True,
                                          mode=sel.SelectSelectorMode.DROPDOWN)),
-            vol.Required(OPT_WINDOW_ALERTS, default=bool(self._v(OPT_WINDOW_ALERTS, True))): sel.BooleanSelector(),
+            vol.Required(OPT_WINDOW_ALERTS, default=bool(self._v(OPT_WINDOW_ALERTS, window_alerts_default(self.config_entry.options)))): sel.BooleanSelector(),
         }))
 
     async def async_step_import_areas(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -579,7 +582,7 @@ class SmartHeatingOptionsFlow(OptionsFlow):
                         added += 1
                     continue
                 name = area_tools.area_name(self.hass, area_id) or area_id
-                data = _room_data_from_area(self.hass, area_id, self._type)
+                data = _room_data_from_area(self.hass, area_id, self._type, entry.data)
                 if not (data.get(CONF_TEMP) or data.get(CONF_TRVS) or data.get(CONF_HEATERS)):
                     continue
                 self.hass.config_entries.async_add_subentry(
@@ -587,8 +590,9 @@ class SmartHeatingOptionsFlow(OptionsFlow):
                     ConfigSubentry(data=MappingProxyType(data), subentry_type=SUBENTRY_ROOM, title=name, unique_id=area_id),
                 )
                 added += 1
-            if added:
+            if added and not entry.update_listeners:  # not loaded (set-up failed): reload to try again
                 self.hass.config_entries.async_schedule_reload(entry.entry_id)
+            # Loaded: each room change runs the update listener, which reloads once for all of them.
             return self.async_create_entry(data=dict(entry.options))
         candidates = area_tools.candidate_areas(self.hass, existing, self._type)
         schema = vol.Schema(
@@ -603,10 +607,15 @@ class SmartHeatingOptionsFlow(OptionsFlow):
         )
 
 
-def _room_data_from_area(hass, area_id: str, heating_type: str | None = None) -> dict[str, Any]:
+def _room_data_from_area(hass, area_id: str, heating_type: str | None = None, house: dict | None = None) -> dict[str, Any]:
     name = area_tools.area_name(hass, area_id) or ""
     priority, comfort = area_tools.defaults_for(name)
     found = area_tools.discover(hass, area_id, heating_type)
+    # The boiler control (a thermostat in the hall), its running sensor and hot water are never the room's TRV or heater.
+    house_ents = {(house or {}).get(k) for k in (CONF_BOILER, CONF_BOILER_ON, CONF_HW_CALLING)} - {None}
+    for key in (CONF_TRVS, CONF_HEATERS):
+        if found.get(key):
+            found[key] = [e for e in found[key] if e not in house_ents]
     data: dict[str, Any] = {CONF_AREA: area_id, CONF_PRIORITY: priority, CONF_COMFORT: comfort}
     data.update({k: v for k, v in found.items() if v})
     return data
@@ -711,7 +720,7 @@ class RoomSubentryFlow(ConfigSubentryFlow):
                 if CONF_FLOOR in data:
                     data[CONF_FLOOR] = int(data[CONF_FLOOR])
                 return self.async_create_entry(title=name, data=data, unique_id=area_id)
-        suggested = user_input or _room_data_from_area(self.hass, area_id, self._type)
+        suggested = user_input or _room_data_from_area(self.hass, area_id, self._type, self._get_entry().data)
         return self.async_show_form(
             step_id="details",
             data_schema=_room_schema(suggested, need_floor=level is None, heating_type=self._type),

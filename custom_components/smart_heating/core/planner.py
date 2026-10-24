@@ -39,6 +39,8 @@ def make_plan(
             decisions[cfg.room_id] = RoomDecision(
                 cfg.room_id, needs[cfg.room_id], Verdict.FAULT, "no valid sensors"
             )
+            if cfg.heater:
+                decisions[cfg.room_id].heater_on = False  # no reading anywhere: no heater stays on
         return Plan(False, decisions, "fault", "all room sensors unavailable")
 
     # Voice 2, per room.
@@ -49,6 +51,10 @@ def make_plan(
         need = needs[cfg.room_id]
         if snap.temp is None:
             decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.FAULT, need.reason)
+            continue
+        if not cfg.radiator and not cfg.heater:
+            # Watched only: no radiator, no heater. Calling the boiler would never end.
+            decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.IDLE, "nothing here can heat it")
             continue
         if snap.opening and need.level is not Level.SAFETY:
             # Open to outside: pause the room (its valve closes, its heater goes off). Frost still heats.
@@ -67,14 +73,16 @@ def make_plan(
             decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.APPROVED, "safety")
             continue
         why = need.reason
+        valve = snap.valve_open if cfg.has_trv else True  # a radiator without a TRV is always open
+        heating_this_room = bool((house.boiler_on and valve and cfg.radiator) or snap.heater_on)
         if season_off:
-            allowed, why = _mild_day(snap, need, house, s)
+            allowed, why = _mild_day(snap, need, house, s, heating_this_room)
             if not allowed:
                 decisions[cfg.room_id] = RoomDecision(cfg.room_id, need, Verdict.VETOED, why)
                 continue
-        valve = snap.valve_open if cfg.has_trv else True  # a radiator without a TRV is always open
-        heating_this_room = bool((house.boiler_on and valve and cfg.radiator) or snap.heater_on)
-        if need.level is not Level.MANUAL and not heating_this_room and _coasting(snap, need.deficit, s):
+        # Coasting waits for a room warming on its own, but not while the boiler runs anyway: it joins the run
+        # rather than needing a run of its own later.
+        if need.level is not Level.MANUAL and not heating_this_room and not house.boiler_on and _coasting(snap, need.deficit, s):
             decisions[cfg.room_id] = RoomDecision(
                 cfg.room_id, need, Verdict.DEFERRED, f"coasting {snap.trend:+.2f}/h"
             )
@@ -92,6 +100,7 @@ def make_plan(
     # Hybrid: don't fire the whole boiler for one room that has its own heater.
     if (
         boiler_control and len(approved) == 1 and approved[0][0].heater and not house.boiler_on
+        and not approved[0][1].heater_blocked
         and needs[approved[0][0].room_id].level is not Level.SAFETY
     ):
         rid = approved[0][0].room_id
@@ -160,8 +169,8 @@ def make_plan(
                     cfg.room_id, d.need, Verdict.PIGGYBACK, "topping up while boiler runs"
                 )
         for cfg, snap in rooms:
-            if not cfg.has_trv:
-                continue
+            if not cfg.has_trv or decisions[cfg.room_id].verdict is Verdict.FAULT:
+                continue  # no reading: leave its TRV as it is (closing it would drop its frost protection)
             d = decisions[cfg.room_id]
             should_open = cfg.room_id in open_ids
             if snap.valve_open is None or snap.valve_open != should_open:
@@ -204,8 +213,8 @@ def _valve_only(rooms, approved, decisions, house: HouseSnapshot, want_on: bool,
                 open_ids.add(cfg.room_id)
                 decisions[cfg.room_id] = RoomDecision(cfg.room_id, d.need, Verdict.PIGGYBACK, "topping up while boiler runs")
     for cfg, snap in rooms:
-        if not cfg.has_trv:
-            continue
+        if not cfg.has_trv or decisions[cfg.room_id].verdict is Verdict.FAULT:
+            continue  # no reading: leave its TRV as it is
         should_open = cfg.room_id in open_ids
         if snap.valve_open is None or snap.valve_open != should_open:
             decisions[cfg.room_id].open_valve = should_open
@@ -220,8 +229,9 @@ def season_is_off(prev: bool | None, mean: float | None, gate: float, band: floa
     return mean >= gate - band if prev else mean >= gate
 
 
-def _mild_day(snap: RoomSnapshot, need, house: HouseSnapshot, s: Settings) -> tuple[bool, str]:
-    """On a mild day automatic heating needs strong evidence; what you ask for always passes."""
+def _mild_day(snap: RoomSnapshot, need, house: HouseSnapshot, s: Settings, heating: bool = False) -> tuple[bool, str]:
+    """On a mild day automatic heating needs strong evidence; what you ask for always passes. A room it is
+    already heating carries on until it is within mild_margin - 1 of target, whatever its trend (no short burns)."""
     gate = f"mild day (outdoor {house.outdoor_mean:.1f}° ≥ {s.season_gate:g}°)"
     if need.level is Level.MANUAL:
         return True, "manual heat"
@@ -231,6 +241,8 @@ def _mild_day(snap: RoomSnapshot, need, house: HouseSnapshot, s: Settings) -> tu
         return False, f"{gate}, empty room"
     if house.mode is Mode.ONE_CYCLE:
         return True, f"One Cycle ({need.reason})"
+    if heating and need.deficit > max(0.0, s.mild_margin - 1.0):
+        return True, f"cold room on a mild day, still heating ({need.reason})"
     if need.deficit >= s.mild_margin and (snap.trend is None or snap.trend < s.coast_rate):
         return True, f"cold room on a mild day ({need.reason})"
     return False, f"{gate}, not cold enough"

@@ -117,9 +117,11 @@ from .const import (
     DEFAULT_OVERRIDE_HOURS,
     DOMAIN,
     OPT_KEYS,
+    OPT_TRV_FULL_OPEN,
     OPT_OVERRIDE_HOURS,
     SUBENTRY_ROOM,
     TRV_STAGGER_S,
+    FAST_DOMAINS,
     SENSOR_REFRESH_S,
     SENSOR_STALE_H,
     UPDATE_INTERVAL_S,
@@ -156,9 +158,11 @@ from .core import (
     Trend,
     house_means,
     is_occupied,
+    join_at,
     make_plan,
 )
 from .core.learn import HEAT_NEEDED
+from .core.occupancy import MOTION_WINDOW_MIN
 from .core.ventilation import Outside, RoomAir, WindowAdvisor, dew_point
 from .core.safety import Block, HeaterWatch, heater_block
 from .core.consumption import Cost, DayRecord, Rates, WINDOW_DAYS, fit, learn_step, meter_step, predict
@@ -215,7 +219,8 @@ class Room:
 
     @property
     def entities(self) -> list[str]:
-        ids = [self.temp_entity, *self.trvs, *self.heaters, *self.power_sensors.values(), *self.presence, *self.media, *self.lights]
+        ids = [self.temp_entity, *self.trvs, *self.heaters, *self.power_sensors.values(), *self.presence, *self.media, *self.lights,
+               *self.openings]
         return [e for e in ids + [self.humidity_entity, self.schedule] if e]
 
 
@@ -285,7 +290,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 cfg=cfg,
                 temp_entity=temp_entity,
                 humidity_entity=d.get(CONF_HUMIDITY),
-                trvs=list(d.get(CONF_TRVS, [])),
+                trvs=[t for t in d.get(CONF_TRVS, []) if t not in self._house_entities],  # never the boiler's own control
                 presence=list(d.get(CONF_PRESENCE, [])),
                 openings=[] if d.get(CONF_NO_OPENINGS) else list(d.get(CONF_OPENINGS, [])),
                 no_openings=bool(d.get(CONF_NO_OPENINGS)),
@@ -294,7 +299,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 schedule=d.get(CONF_SCHEDULE),
                 area_id=area_id,
                 floor_name=floor_name,
-                heaters=list(d.get(CONF_HEATERS, [])),
+                heaters=[h for h in d.get(CONF_HEATERS, []) if h not in self._house_entities],
                 heater_w=float(d.get(CONF_HEATER_W) or DEFAULT_HEATER_W),
                 heater_w_set=bool(d.get(CONF_HEATER_W)),
                 heater_eco_w=float(d[CONF_HEATER_ECO_W]) if d.get(CONF_HEATER_ECO_W) else None,
@@ -309,6 +314,11 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self._apply_lock = asyncio.Lock()
         self._change_due = False  # a refresh for sensor changes is already scheduled
         self._change_cancel = None
+        self._join_cancel = None  # a check when presence reaches JOIN_MIN
+        self._saved_mono = time.monotonic()  # the last periodic save (learning, energy, log)
+        self._control_gen = 0  # bumped by every change of who controls what (kill switch, watching, mode, stop)
+        self._motion_ons: dict[str, list[datetime]] = {}  # motion sensors: recent switch-on times
+        self._join_due: datetime | None = None
         self._change_at = 0.0  # monotonic time of the last one
         self._applied_boiler: bool | None = None
 
@@ -329,6 +339,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self.notify_people: list[str] = list(opts.get(OPT_NOTIFY_PEOPLE) or [])
         self.notify_services = notify_list(opts.get(OPT_NOTIFY))
         self.window_alerts = bool(opts.get(OPT_WINDOW_ALERTS, window_alerts_default(opts)))
+        self.trv_full_open = bool(opts.get(OPT_TRV_FULL_OPEN, False))
         self.windows = WindowAdvisor()
         self.window_info: dict[str, Any] = {}
         self.radiator_rooms: list[str] = []
@@ -395,6 +406,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         # Commands wait until mode, enabled and watching only are restored (async_setup_entry clears this for
         # the first update and sets it once the entities are set up). True elsewhere, e.g. in tests.
         self.restored = True
+        self.reload_queued = False  # one reload for many room changes at once (Import areas)
         self._boiler_failing = False  # the last boiler command failed: logged once, retried each cycle
         self._boiler_cmd_state: bool | None = None
         self._boiler_cmd_at: datetime | None = None
@@ -565,6 +577,8 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             "step_kw": self.step_kw,
             "gas_yesterday": self.gas_yesterday,
             "elec_yesterday": self.elec_yesterday,
+            "overrides": {rid: [r.override.value, r.override_until.isoformat() if r.override_until else None]
+                          for rid, r in self.rooms.items() if r.override is not Override.AUTO},
         }
 
     async def _load(self) -> None:
@@ -593,7 +607,9 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 self.log.append(entry)
         self.heat_test = data.get("heat_test") or None
         el = data.get("electric") or {}
-        if el.get("day") == dt_util.as_local(dt_util.utcnow()).date().isoformat():
+        today = dt_util.as_local(dt_util.utcnow()).date()
+        # Yesterday's too (a restart across midnight): the first update then closes that day instead of losing it.
+        if el.get("day") in (today.isoformat(), (today - timedelta(days=1)).isoformat()):
             self.elec_day, self.elec_kwh = el["day"], float(el.get("kwh", 0))
             for rid, (kwh, mins) in (el.get("rooms") or {}).items():
                 if rid in self.rooms:
@@ -620,6 +636,16 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 self.setpoints = Setpoints.from_dict(data["setpoints"])
             except (KeyError, TypeError, ValueError) as err:
                 _LOGGER.warning("Discarding stored setpoints: %s", err)
+        # Heat now / Off on a room survive a reload (saving settings, adding a room) until they would have ended.
+        now = dt_util.utcnow()
+        for rid, (value, until) in (data.get("overrides") or {}).items():
+            room = self.rooms.get(rid)
+            try:
+                end = dt_util.parse_datetime(until) if until else None
+                if room is not None and (end is None or end > now):
+                    room.override, room.override_until = Override(value), end
+            except (TypeError, ValueError):
+                continue
 
     @property
     def starting(self) -> bool:
@@ -759,6 +785,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         await self.async_config_entry_first_refresh()
 
     async def async_stop(self) -> None:
+        self._control_gen += 1
         self._reset_one_cycle()
         if self._unsub_power:
             self._unsub_power()
@@ -769,18 +796,42 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         if self._change_cancel:
             self._change_cancel()
             self._change_cancel, self._change_due = None, False
+        if self._join_cancel:
+            self._join_cancel()
+            self._join_cancel = self._join_due = None
         for unsub in getattr(self, "_unsub_registry", []):
             unsub()
         await self._store.async_save(self._store_data())
 
     @callback
     def _on_change(self, event: Event[EventStateChangedData]) -> None:
-        """A watched sensor changed: refresh now, or once SENSOR_REFRESH_S after the last one (about 100 sensors
-        report every few seconds between them; your taps on the card refresh at once on their own)."""
+        """A watched entity changed. Presence, lights, doors and windows, boiler, hot water and away refresh at once;
+        measurements (temperatures, humidity, power, TRVs, weather) at once, then at most every SENSOR_REFRESH_S:
+        they report every few seconds between them. Taps on the card refresh at once on their own."""
+        new, old = event.data.get("new_state"), event.data.get("old_state")
+        if new is not None and new.state in _ON_STATES and (old is None or old.state not in _ON_STATES) \
+                and new.attributes.get("device_class") == "motion":
+            self._motion_ons.setdefault(new.entity_id, []).append(new.last_changed)  # every trigger, even between refreshes
+        if str(event.data.get("entity_id", "")).split(".", 1)[0] in FAST_DOMAINS:
+            self.hass.async_create_task(self.async_request_refresh())
+            return
         if self._change_due:
             return
         self._change_due = True
         self._change_cancel = async_call_later(self.hass, max(0.0, SENSOR_REFRESH_S - (time.monotonic() - self._change_at)), self._change_refresh)
+
+    def _check_at(self, when: datetime, now: datetime) -> None:
+        """One refresh at `when` (the earliest asked for wins)."""
+        if self._join_cancel and self._join_due and self._join_due <= when:
+            return
+        if self._join_cancel:
+            self._join_cancel()
+        self._join_due = when
+        self._join_cancel = async_call_later(self.hass, (when - now).total_seconds() + 1, self._join_refresh)
+
+    async def _join_refresh(self, _now=None) -> None:
+        self._join_cancel = self._join_due = None
+        await self.async_request_refresh()
 
     async def _change_refresh(self, _now=None) -> None:
         self._change_due, self._change_at, self._change_cancel = False, time.monotonic(), None
@@ -791,6 +842,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
     async def async_set_mode(self, mode: Mode, all_rooms: bool = False, restoring: bool = False) -> None:
         """Off always cancels: One Cycle, Heat now in every room, a heat test, and the boiler at once."""
         now = dt_util.utcnow()
+        self._control_gen += 1
         if restoring:
             self.mode = mode
             if mode is Mode.ONE_CYCLE:
@@ -842,13 +894,20 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         if self.boiler_control and self.enabled and not self.monitor_only:
             await self._boiler(False, force=True)  # off is always allowed, even inside the guard time
 
-    async def async_set_enabled(self, value: bool) -> None:
+    async def async_set_enabled(self, value: bool, restoring: bool = False) -> None:
+        """The kill switch. Off: a heat test ends and the boiler goes off, unless Watching only (others own it then)
+        or this is only the switch being restored at start-up (nothing to undo: it was already off)."""
+        self._control_gen += 1
         self.enabled = value
-        if not value and self.boiler_control:
-            await self._boiler(False, force=True)
+        if not value and not restoring:
+            if self.heat_test:
+                await self._finish_heat_test("stopped: Smart Heating disabled")
+            if self.boiler_control and not self.monitor_only and self.restored:
+                await self._boiler(False, force=True)
         await self.async_request_refresh()
 
     async def async_set_monitor_only(self, value: bool, restoring: bool = False) -> None:
+        self._control_gen += 1
         if value != self.monitor_only and not restoring:
             self._log("Watching only: decisions are logged, the boiler and TRVs are left alone" if value
                       else "Heating: Smart Heating now controls the boiler and TRVs")
@@ -859,6 +918,12 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
     # ---------- setpoints ----------
 
     @property
+    def _house_entities(self) -> set[str]:
+        """The boiler control, its running sensor and hot water: never a room's TRV or heater (a thermostat in the
+        hall picked up as the hall's TRV would close the boiler while it heats)."""
+        return {e for e in (self.house_cfg.get(k) for k in (CONF_BOILER, CONF_BOILER_ON, CONF_HW_CALLING)) if e}
+
+    @property
     def effective_settings(self) -> Settings:
         return self.setpoints.settings(self.settings)
 
@@ -867,6 +932,10 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
     async def async_set_house_target(self, value: float) -> None:
         value = round(float(value) * 2) / 2
+        if value < self.settings.baseline_day:
+            # Below the day baseline an in-use room would still be held at the baseline: no lower than that.
+            self._log(f"House target {value:.1f}° is below the day baseline: set to {self.settings.baseline_day:.1f}°")
+            value = self.settings.baseline_day
         if value != self.setpoints.house:
             self._log(f"House target set to {value:.1f}° (rooms shift {value - self.setpoints.house:+.1f}°)")
         self.setpoints.house = value
@@ -980,7 +1049,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             for trv in room.trvs:
                 st = self._state(trv)
                 if st is not None:
-                    prev[trv] = st.attributes.get("temperature")
+                    prev[trv] = [st.state, st.attributes.get("temperature")]  # an "off" TRV has no temperature
         prev_heaters = {}
         for room in self.rooms.values():
             for h in room.heaters:
@@ -1096,8 +1165,11 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         if not test:
             return
         self._log(f"Heat test {why}: radiators back to their settings, the house now cools for calibration")
-        for trv, temp in (test.get("prev_trv") or {}).items():
-            if temp is not None:
+        for trv, was in (test.get("prev_trv") or {}).items():
+            state, temp = was if isinstance(was, list) else (None, was)  # tests saved before 0.15.5: temperature only
+            if state == "off":
+                await self._trv_off(trv)
+            elif temp is not None:
                 await self._set_trv(trv, float(temp))
         by_heater = {h: r for r in self.rooms.values() for h in r.heaters}
         for h, (state, temp) in (test.get("prev_heaters") or {}).items():
@@ -1166,15 +1238,21 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             _LOGGER.warning("Heater %s command failed: %s", entity_id, err)
             self._log(f"Heater {entity_id} command failed: {err}", room=room.cfg.name)
 
+    async def _trv_off(self, trv: str) -> None:
+        try:
+            await self.hass.services.async_call("climate", "set_hvac_mode", {"entity_id": trv, "hvac_mode": "off"}, blocking=True)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("TRV %s off failed: %s", trv, err)
+
     async def _set_trv(self, trv: str, temp: float | None, open_max: bool = False) -> None:
         st = self._state(trv)
         if st is None:
             return
         data: dict[str, Any] = {"entity_id": trv}
         if open_max:
-            temp = min(30.0, float(st.attributes.get("max_temp") or 30))
-            if st.state == "off" and "heat" in (st.attributes.get("hvac_modes") or []):
-                data["hvac_mode"] = "heat"
+            temp = _trv_max(st)
+        if st.state == "off" and "heat" in (st.attributes.get("hvac_modes") or ["heat"]):
+            data["hvac_mode"] = "heat"
         data["temperature"] = temp
         try:
             await self.hass.services.async_call("climate", "set_temperature", data, blocking=True)
@@ -1231,7 +1309,11 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         self._check_boiler_response(now)
         if self._setup_checked is None or now - self._setup_checked >= timedelta(minutes=10):
             self._check_setup()
-        self._store.async_delay_save(self._store_data, SAVE_DELAY_S)
+        # Save at most every SAVE_DELAY_S. A delayed save asked for on every update would be pushed back each time
+        # and only happen on a clean stop: a power cut would lose weeks of learning.
+        if time.monotonic() - self._saved_mono >= SAVE_DELAY_S:
+            self._saved_mono = time.monotonic()
+            self._store.async_delay_save(self._store_data, 1)
 
         # One Cycle ends itself once nothing calls or every caller is coasting.
         if self.away and plan.status == "off":
@@ -1265,14 +1347,14 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             pass  # first update after a start: mode, enabled and watching only are restored next, then it acts
         elif self.heat_test and self.enabled:
             if not self._apply_lock.locked():
-                self.hass.async_create_background_task(self._locked(self._run_heat_test(plan)), f"{DOMAIN}_heat_test")
+                self._task(self._locked(self._run_heat_test(plan)), f"{DOMAIN}_heat_test")
         elif self.enabled and self.monitor_only:
             plan.reason = f"watching only: {plan.reason}"
         elif self.enabled:
             if self._apply_lock.locked():
                 _LOGGER.debug("Previous apply still running, skipping")
             else:
-                self.hass.async_create_background_task(self._apply(plan), f"{DOMAIN}_apply")
+                self._task(self._apply(plan, self._control_gen), f"{DOMAIN}_apply")
         return plan
 
     def _learn(self, now: datetime, house: HouseSnapshot, pairs) -> None:
@@ -1787,8 +1869,16 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             hw_calling=bool(hw and hw.state in _ON_STATES),
             hw_calling_min=_minutes(now, hw.last_changed) if hw and hw.state in _ON_STATES else 0.0,
             boiler_on=boiler_on,
-            boiler_state_min=_minutes(now, boiler.last_changed) if boiler else 1e9,
+            boiler_state_min=_minutes(now, changed) if (changed := self._boiler_changed_at(boiler)) else 1e9,
         )
+
+    def _boiler_changed_at(self, boiler: State | None) -> datetime | None:
+        """When the boiler last went on or off. A thermostat in setpoint style stays "heat" while its target turns it
+        on and off, so its own last change says nothing: our last on/off command does (min run and min off)."""
+        changed = boiler.last_changed if boiler else None
+        if self._setpoint_style and self._boiler_cmd_at and (changed is None or self._boiler_cmd_at > changed):
+            changed = self._boiler_cmd_at
+        return changed
 
     def _room_snapshot(self, room: Room, now: datetime) -> RoomSnapshot:
         if room.override_until and now >= room.override_until:
@@ -1801,13 +1891,13 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         opening, recovering = self._opening_state(room, now, temp, prev)
         room.opening = opening
 
-        room.occupied = is_occupied(
-            now,
-            self._signals(room.presence),
-            self._signals(room.media),
-            self._signals(room.lights),
-            room.occupied,
-        )
+        presence, media = self._signals(room.presence), self._signals(room.media)
+        room.occupied = is_occupied(now, presence, media, self._signals(room.lights), room.occupied)
+        if not room.occupied:
+            # Present but not long enough yet: look again right then, not at the next regular update.
+            due = [t for t in map(join_at, presence + media) if t is not None and t > now]
+            if due:
+                self._check_at(min(due), now)
         return RoomSnapshot(
             temp=temp,
             trend=room.trend.rate(),
@@ -1817,6 +1907,7 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             override=room.override,
             valve_open=self._valve_open(room),
             heater_on=self._heater_on(room) if room.heaters else None,
+            heater_blocked=room.heater_block is not None,  # last cycle's precaution: the hybrid rule then uses gas
             prev_calling=room.prev_calling,
             opening=opening,
             recovering_min=recovering,
@@ -1872,32 +1963,49 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
         async with self._apply_lock:
             await coro
 
-    async def _apply(self, plan: Plan) -> None:
+    def _task(self, coro, name: str) -> None:
+        """A background job tied to the entry, so an unload or reload cancels it."""
+        if self.config_entry is not None:
+            self.config_entry.async_create_background_task(self.hass, coro, name)
+        else:
+            self.hass.async_create_background_task(coro, name)
+
+    def _may_act(self, gen: int) -> bool:
+        """Still allowed to command what this plan was made for: nothing changed who controls what since."""
+        return gen == self._control_gen and self.enabled and not self.monitor_only and self.restored
+
+    async def _apply(self, plan: Plan, gen: int | None = None) -> None:
+        gen = self._control_gen if gen is None else gen
         async with self._apply_lock:
-            # Open valves before firing; leave valves alone when stopping.
+            # Open valves before firing; leave valves alone when stopping. Every command first checks that the
+            # kill switch, Watching only and the mode haven't changed since the plan was made (TRVs take seconds).
             for room_id, decision in plan.rooms.items():
                 if decision.open_valve is None:
                     continue
                 room = self.rooms[room_id]
                 target = decision.need.target or self.room_comfort(room)
-                setpoint = (
-                    _clamp(round(target + self.settings.trv_open_offset))
-                    if decision.open_valve
-                    else _clamp(round(self.settings.trv_closed))
-                )
                 for trv in room.trvs:
+                    if not self._may_act(gen):
+                        return
                     st = self.hass.states.get(trv)
                     if st is None or st.state in _BAD:
                         continue
+                    # Always in heat mode: closed is the frost setpoint (the TRV still guards against freezing).
+                    if not decision.open_valve:
+                        setpoint = _clamp(round(self.settings.trv_closed))
+                    elif self.trv_full_open:
+                        setpoint = _trv_max(st)
+                    else:
+                        setpoint = _clamp(round(target + self.settings.trv_open_offset))
                     current = st.attributes.get("temperature")
-                    if current is not None and float(current) == setpoint:
+                    is_off = st.state == "off"
+                    if not is_off and current is not None and float(current) == setpoint:
                         continue
+                    data: dict[str, Any] = {"entity_id": trv, "temperature": setpoint}
+                    if is_off and "heat" in (st.attributes.get("hvac_modes") or ["heat"]):
+                        data["hvac_mode"] = "heat"
                     try:
-                        await self.hass.services.async_call(
-                            "climate", "set_temperature",
-                            {"entity_id": trv, "temperature": setpoint},
-                            blocking=True,
-                        )
+                        await self.hass.services.async_call("climate", "set_temperature", data, blocking=True)
                     except Exception as err:  # noqa: BLE001
                         _LOGGER.warning("TRV %s set %s failed: %s", trv, setpoint, err)
                         self._log(f"TRV {trv} command failed: {err}", room=room.cfg.name)
@@ -1908,8 +2016,10 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
                 room = self.rooms[room_id]
                 target = decision.need.target or self.room_comfort(room)
                 for h in room.heaters:
+                    if not self._may_act(gen):
+                        return
                     await self._set_heater(h, decision.heater_on, target, room)
-            if self.boiler_control:
+            if self.boiler_control and self._may_act(gen):
                 targets = [
                     d.need.target for d in plan.rooms.values()
                     if d.verdict.value in ("approved", "piggyback") and d.need.target is not None
@@ -1940,15 +2050,17 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
             return
         self._boiler_cmds = [t for t in self._boiler_cmds if now - t < timedelta(minutes=BOILER_FLAP_WINDOW_MIN)]
         if not force and len(self._boiler_cmds) >= BOILER_FLAP_MAX:
+            already = self.boiler_locked_until is not None and now < self.boiler_locked_until
             self.boiler_locked_until = now + timedelta(minutes=BOILER_LOCK_MIN)
-            self._log(f"Boiler protection: {len(self._boiler_cmds)} switches in {BOILER_FLAP_WINDOW_MIN} min, "
-                      f"boiler control locked for {BOILER_LOCK_MIN} min")
-            self._notify_problem(
-                "Boiler protection",
-                f"Smart Heating switched the boiler {len(self._boiler_cmds)} times in {BOILER_FLAP_WINDOW_MIN} minutes, "
-                f"so it has stopped switching it for {BOILER_LOCK_MIN} minutes. Something else may be switching "
-                f"{entity} too (an automation, schedule or hot water priority). Check the log on the card.",
-            )
+            if not already:  # one log line and one alert per lock, not one per switch while it lasts
+                self._log(f"Boiler protection: {len(self._boiler_cmds)} switches in {BOILER_FLAP_WINDOW_MIN} min, "
+                          f"boiler control locked for {BOILER_LOCK_MIN} min")
+                self._notify_problem(
+                    "Boiler protection",
+                    f"Smart Heating switched the boiler {len(self._boiler_cmds)} times in {BOILER_FLAP_WINDOW_MIN} minutes, "
+                    f"so it has stopped switching it for {BOILER_LOCK_MIN} minutes. Something else may be switching "
+                    f"{entity} too (an automation, schedule or hot water priority). Check the log on the card.",
+                )
             if not on:
                 pass  # off is the safe direction: still allowed below
             else:
@@ -2299,16 +2411,29 @@ class HeatingCoordinator(DataUpdateCoordinator[Plan]):
 
     def _signals(self, entity_ids: list[str]) -> list[Signal]:
         out = []
+        now = dt_util.utcnow()
         for e in entity_ids:
             st = self._state(e)
-            if st is not None:
-                out.append(Signal(st.state in _ON_STATES, st.last_changed))
+            if st is None:
+                continue
+            on = st.state in _ON_STATES
+            if st.attributes.get("device_class") != "motion":
+                out.append(Signal(on, st.last_changed))
+                continue
+            ons = self._motion_ons.setdefault(e, [])
+            if on and st.last_changed not in ons:
+                ons.append(st.last_changed)  # on before we were watching
+            ons[:] = [t for t in ons if now - t <= timedelta(minutes=MOTION_WINDOW_MIN)]
+            out.append(Signal(on, st.last_changed, motion=True, triggers=len(ons)))
         return out
 
     def _valve_open(self, room: Room) -> bool | None:
         states = []
         for trv in room.trvs:
             st = self._state(trv)
+            if st is not None and st.state == "off":
+                states.append(False)  # mode off: shut whatever the setpoint says
+                continue
             t = st.attributes.get("temperature") if st else None
             if t is None:
                 return None
@@ -2355,3 +2480,11 @@ def _wind_kmh(attrs) -> float | None:
 
 def _clamp(v: float) -> int:
     return int(min(30, max(5, v)))
+
+
+def _trv_max(st) -> float:
+    """The TRV's own top setpoint (30 on most): fully open."""
+    try:
+        return min(30.0, float(st.attributes.get("max_temp") or 30))
+    except (TypeError, ValueError):
+        return 30.0
